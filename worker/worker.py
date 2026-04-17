@@ -1,8 +1,10 @@
 """Worker - pulls tasks from queue and processes them."""
 import time
 import sys
-sys.path.insert(0, "../async-hermes-agent")
-from runtime import TaskQueue, TaskStatus
+sys.path.insert(0, ".")
+sys.path.insert(0, "/home/lam/Documents/GAIA/hpc-agent")
+import _setup
+from runtime.task_queue import TaskQueue, TaskStatus
 
 
 class Worker:
@@ -59,6 +61,9 @@ if __name__ == "__main__":
     parser.add_argument("--latency-max", type=float, default=0.0, help="Max latency (seconds)")
     parser.add_argument("--batch-size", type=int, default=1, help="Number of tasks to process at once")
     parser.add_argument("--idle-timeout", type=int, default=None, help="Exit after N idle cycles")
+    parser.add_argument("--ollama", action="store_true", help="Use Ollama runner")
+    parser.add_argument("--ollama-model", default="llama3:8b", help="Ollama model name")
+    parser.add_argument("--ollama-endpoint", default="http://localhost:11434", help="Ollama endpoint")
     args = parser.parse_args()
 
     from infra.redis_queue import RedisTaskQueue
@@ -71,6 +76,9 @@ if __name__ == "__main__":
             latency_min=args.latency_min,
             latency_max=args.latency_max,
         )
+    elif args.ollama:
+        from worker.model_runner import OllamaRunner
+        runner = OllamaRunner(endpoint=args.ollama_endpoint, model=args.ollama_model)
     else:
         from worker.model_runner import VLLMRunner
         runner = VLLMRunner(endpoint=args.model_endpoint, api_key=args.api_key)

@@ -6,9 +6,10 @@ import time
 import uuid
 import threading
 import redis as redis_lib
-
 import sys
-sys.path.insert(0, "../async-hermes-agent")
+sys.path.insert(0, ".")
+sys.path.insert(0, "/home/lam/Documents/GAIA/hpc-agent")
+import _setup
 from runtime.task_queue import TaskQueue, LLMTask, TaskResult, TaskStatus
 
 

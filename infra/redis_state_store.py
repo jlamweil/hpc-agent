@@ -6,7 +6,9 @@ import hashlib
 import time
 import redis as redis_lib
 import sys
-sys.path.insert(0, "../async-hermes-agent")
+sys.path.insert(0, ".")
+sys.path.insert(0, "/home/lam/Documents/GAIA/hpc-agent")
+import _setup
 from runtime.state_store import StateStore, AgentState
 from runtime.exceptions import StateStoreError
 
