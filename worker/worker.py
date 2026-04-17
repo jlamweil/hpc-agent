@@ -34,12 +34,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-host", default="localhost")
     parser.add_argument("--queue-port", type=int, default=6379)
-    parser.add_argument("--model-endpoint", required=True)
+    parser.add_argument("--model-endpoint", default=None)
     parser.add_argument("--api-key", default=None)
+    parser.add_argument("--mock", action="store_true", help="Use mock runner")
+    parser.add_argument("--mock-response", default="Mock response from worker")
     args = parser.parse_args()
 
     from infra.redis_queue import RedisTaskQueue
     queue = RedisTaskQueue(host=args.queue_host, port=args.queue_port)
-    runner = VLLMRunner(endpoint=args.model_endpoint, api_key=args.api_key)
+    
+    if args.mock:
+        from worker.model_runner import MockRunner
+        runner = MockRunner(response=args.mock_response)
+    else:
+        from worker.model_runner import VLLMRunner
+        runner = VLLMRunner(endpoint=args.model_endpoint, api_key=args.api_key)
+    
     worker = Worker(queue, runner)
     worker.run_loop()

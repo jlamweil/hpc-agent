@@ -1,4 +1,4 @@
-"""Model runner - calls LLM (vLLM, OpenAI, etc.)."""
+"""Model runner - calls LLM (vLLM, OpenAI, etc.) or mocks for testing."""
 from typing import Optional
 import sys
 sys.path.insert(0, "../async-hermes-agent")
@@ -12,6 +12,23 @@ class ModelRunner:
 
     def run(self, task: LLMTask) -> TaskResult:
         raise NotImplementedError
+
+
+class MockRunner(ModelRunner):
+    """Mock runner for testing - returns fixed response."""
+    
+    def __init__(self, response: str = "Mock response from worker"):
+        super().__init__(endpoint="mock://", api_key=None)
+        self.response = response
+
+    def run(self, task: LLMTask) -> TaskResult:
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.COMPLETED,
+            content=self.response,
+            tool_calls=None,
+            finish_reason="stop",
+        )
 
 
 class VLLMRunner(ModelRunner):

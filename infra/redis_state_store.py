@@ -13,13 +13,18 @@ from runtime.exceptions import StateStoreError
 
 class RedisStateStore(StateStore):
     def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0, 
-                 prefix: str = "agent:state:", **config):
+                 prefix: str = "agent:state:", task_map_prefix: str = "agent:task:",
+                 **config):
         super().__init__("redis", host=host, port=port, db=db, prefix=prefix, **config)
         self._client = redis_lib.Redis(host=host, port=port, db=db, decode_responses=False)
         self.prefix = prefix
+        self.task_map_prefix = task_map_prefix
 
     def _key(self, agent_id: str) -> str:
         return f"{self.prefix}{agent_id}"
+
+    def _task_key(self, task_id: str) -> str:
+        return f"{self.task_map_prefix}{task_id}"
 
     def _serialize(self, state: AgentState) -> bytes:
         data = asdict(state)
@@ -44,6 +49,8 @@ class RedisStateStore(StateStore):
     def save(self, state: AgentState) -> bool:
         try:
             self._client.set(self._key(state.agent_id), self._serialize(state))
+            for task_id in state.pending_task_ids:
+                self._client.set(self._task_key(task_id), state.agent_id)
             return True
         except Exception as e:
             raise StateStoreError(f"Redis save failed: {e}")
@@ -65,6 +72,20 @@ class RedisStateStore(StateStore):
 
     def delete(self, agent_id: str) -> bool:
         try:
+            state = self.load(agent_id)
+            if state:
+                for task_id in state.pending_task_ids:
+                    self._client.delete(self._task_key(task_id))
             return bool(self._client.delete(self._key(agent_id)))
         except Exception:
             return False
+
+    def load_by_task(self, task_id: str) -> Optional[AgentState]:
+        try:
+            agent_id = self._client.get(self._task_key(task_id))
+            if agent_id is None:
+                return None
+            agent_id = agent_id.decode() if isinstance(agent_id, bytes) else agent_id
+            return self.load(agent_id)
+        except Exception:
+            return None
