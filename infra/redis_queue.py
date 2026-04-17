@@ -1,26 +1,31 @@
 """Redis task queue - infrastructure implementation (hpc-agent)."""
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, Callable
 import json
 import time
 import uuid
+import threading
 import redis as redis_lib
 
-# Import from hermes abstract interfaces
 import sys
 sys.path.insert(0, "../async-hermes-agent")
 from runtime.task_queue import TaskQueue, LLMTask, TaskResult, TaskStatus
 
 
 class RedisTaskQueue(TaskQueue):
+    TASK_COMPLETED_CHANNEL = "hpc:task:completed"
+
     def __init__(self, host: str = "localhost", port: int = 6379, db: int = 1,
                  prefix: str = "llm:task:", result_prefix: str = "llm:result:",
                  queue_key: str = "llm:queue", **config):
         self._client = redis_lib.Redis(host=host, port=port, db=db, decode_responses=False)
+        self._pubsub = redis_lib.Redis(host=host, port=port, db=db, decode_responses=True)
         self.prefix = prefix
         self.result_prefix = result_prefix
         self.queue_key = queue_key
         self.timeout = config.get("timeout", 300)
+        self._listener_thread = None
+        self._callbacks = {}
 
     def _task_key(self, task_id: str) -> str:
         return f"{self.prefix}{task_id}"
@@ -104,7 +109,29 @@ class RedisTaskQueue(TaskQueue):
         
         self._client.hset(self._result_key(result.task_id), mapping=data)
         self._client.hset(self._task_key(result.task_id), "status", result.status.value)
+        
+        # Publish completion event
+        self._client.publish(self.TASK_COMPLETED_CHANNEL, result.task_id)
+        
         return True
+
+    def subscribe_completed(self, callback: Callable[[str], None]) -> None:
+        """Subscribe to task completion events."""
+        def _listen():
+            pubsub = self._pubsub.pubsub()
+            pubsub.subscribe(self.TASK_COMPLETED_CHANNEL)
+            for msg in pubsub.listen():
+                if msg["type"] == "message":
+                    task_id = msg["data"]
+                    if task_id in self._callbacks:
+                        self._callbacks[task_id](task_id)
+        
+        self._listener_thread = threading.Thread(target=_listen, daemon=True)
+        self._listener_thread.start()
+
+    def on_task_completed(self, task_id: str, callback: Callable[[str], None]) -> None:
+        """Register a callback for a specific task."""
+        self._callbacks[task_id] = callback
 
     def dequeue_batch(self, count: int, worker_id: str) -> list[LLMTask]:
         tasks = []
@@ -136,3 +163,15 @@ class RedisTaskQueue(TaskQueue):
             return self._client.ping()
         except Exception:
             return False
+
+    def get_metrics(self) -> dict:
+        try:
+            info = self._client.info()
+            return {
+                "queue_size": self.get_queue_size(),
+                "total_keys": self._client.dbsize(),
+                "memory_used_mb": info.get("used_memory", 0) / (1024 * 1024),
+                "connected_clients": info.get("connected_clients", 0),
+            }
+        except Exception:
+            return {"error": "Failed to get metrics"}
