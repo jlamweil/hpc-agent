@@ -6,23 +6,22 @@
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --mem=8G
+#SBATCH --partition=publicgpu
 
 #SBATCH --export=ALL
 
-# Load required modules (customize for your HPC)
-# module load python/3.11
-# module load cuda/12.2
-
 set -e
 
-# Environment variables passed from runtime
+HERO_DIR="$HOME/hpc-agent"
+ASYNC_HERMES="$HOME/async-hermes-agent"
+
 QUEUE_HOST="${QUEUE_HOST:-localhost}"
 QUEUE_PORT="${QUEUE_PORT:-6379}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-}"
 OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT:-http://localhost:11434}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3:8b}"
-WORKER_MODE="${WORKER_MODE:-ollama}"  # ollama, mock, vllm
+WORKER_MODE="${WORKER_MODE:-mock}"
 
 echo "=== Slurm Worker Starting ==="
 echo "Job ID: $SLURM_JOB_ID"
@@ -31,19 +30,25 @@ echo "Queue: $QUEUE_HOST:$QUEUE_PORT"
 echo "Worker mode: $WORKER_MODE"
 echo "================================"
 
-cd /home/lam/Documents/GAIA/hpc-agent
+cd "$HERO_DIR"
 
-# Activate virtual environment if exists
+# Activate venv if exists
 if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
-# Run the worker
+# Build args based on mode
+if [ "$WORKER_MODE" = "ollama" ]; then
+    MODE_ARGS="--ollama --ollama-endpoint $OLLAMA_ENDPOINT --ollama-model $OLLAMA_MODEL"
+elif [ "$WORKER_MODE" = "vllm" ]; then
+    MODE_ARGS="--model-endpoint $OLLAMA_ENDPOINT"
+else
+    MODE_ARGS="--mock"
+fi
+
 exec python worker/worker.py \
     --queue-host "$QUEUE_HOST" \
     --queue-port "$QUEUE_PORT" \
     --batch-size "$BATCH_SIZE" \
-    --ollama \
-    --ollama-endpoint "$OLLAMA_ENDPOINT" \
-    --ollama-model "$OLLAMA_MODEL" \
+    $MODE_ARGS \
     ${IDLE_TIMEOUT:+"--idle-timeout" "$IDLE_TIMEOUT"}
