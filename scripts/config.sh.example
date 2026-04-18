@@ -1,0 +1,7 @@
+# Local overrides - COPY THIS to config.sh and edit
+# DO NOT COMMIT - contains sensitive info
+
+HPC_HOST="jlam@hpc-login.u-strasbg.fr"
+SSH_KEY=""
+LOCAL_PORT="8000"
+MODEL_NAME="llama-7b"

@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .hpc_notes.md
+scripts/config.sh
+*.db
+*.sqlite
