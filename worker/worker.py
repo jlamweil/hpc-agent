@@ -1,23 +1,24 @@
 """Worker - pulls tasks from queue and processes tasks."""
 import time
 import sys
+import os
 import importlib.util
 
 
 def _setup_paths():
-    hero = "/home/lam/Documents/GAIA/hpc-agent"
-    async_hermes = "/home/lam/Documents/GAIA/async-hermes-agent"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    hero = os.path.dirname(script_dir)
+    async_hermes = os.path.join(os.path.dirname(hero), "async-hermes-agent")
     
-    # Find and load the async-hermes-agent runtime module
+    task_queue_path = f"{async_hermes}/runtime/task_queue.py"
     spec = importlib.util.spec_from_file_location(
         "runtime_task_queue",
-        f"{async_hermes}/runtime/task_queue.py"
+        task_queue_path
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules["runtime.task_queue"] = module
     spec.loader.exec_module(module)
     
-    # Return the classes we need
     return module.TaskQueue, module.TaskStatus
 
 
@@ -75,13 +76,11 @@ if __name__ == "__main__":
         spec.loader.exec_module(m)
         return m
     
-    async_hermes = "/home/lam/Documents/GAIA/async-hermes-agent"
-    hero = "/home/lam/Documents/GAIA/hpc-agent"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    hero = os.path.dirname(script_dir)
+    async_hermes = os.path.join(os.path.dirname(hero), "async-hermes-agent")
     
-    # Load runtime.task_queue
     rtq = load_module(f"{async_hermes}/runtime/task_queue.py", "task_queue")
-    
-    # Load infra.redis_queue
     irq = load_module(f"{hero}/infra/redis_queue.py", "redis_queue")
     RedisTaskQueue = irq.RedisTaskQueue
     

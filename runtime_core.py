@@ -7,7 +7,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 HERO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(HERO, "async-hermes-agent"))
+ASYNC_HERMES = os.path.join(os.path.dirname(HERO), "async-hermes-agent")
+sys.path.insert(0, ASYNC_HERMES)
 sys.path.insert(0, os.path.join(HERO, "worker"))
 
 from runtime import AsyncAIAgent, TaskQueue, StateStore, AgentStatus, TaskStatus
