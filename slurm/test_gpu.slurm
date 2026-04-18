@@ -34,9 +34,8 @@ python << 'PYEOF'
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
-# Use a simpler model - Llama 3.2 1B (more compatible)
-print("Loading model...")
-model_name = "meta-llama/Llama-3.2-1B-Instruct"
+# Use open model - TinyLlama (1.1B) - very fast, no auth needed
+model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
 try:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
