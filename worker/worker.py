@@ -107,6 +107,8 @@ if __name__ == "__main__":
     parser.add_argument("--vllm", action="store_true", help="Use vLLM runner")
     parser.add_argument("--vllm-endpoint", default="http://localhost:8000", help="vLLM endpoint")
     parser.add_argument("--vllm-model", default="meta-llama/Llama-3.2-1B-Instruct", help="vLLM model name")
+    parser.add_argument("--transformers", action="store_true", help="Use HuggingFace transformers runner")
+    parser.add_argument("--transformers-model", default="TinyLlama/TinyLlama-1.1B-Chat-v1.0", help="Transformers model name")
     args = parser.parse_args()
 
     queue = RedisTaskQueue(host=args.queue_host, port=args.queue_port)
@@ -121,6 +123,8 @@ if __name__ == "__main__":
         runner = OllamaRunner(endpoint=args.ollama_endpoint, model=args.ollama_model)
     elif args.vllm:
         runner = VLLMRunner(endpoint=args.vllm_endpoint, model=args.vllm_model)
+    elif args.transformers:
+        runner = TransformersRunner(model_name=args.transformers_model)
     else:
         runner = VLLMRunner(endpoint=args.model_endpoint, api_key=args.api_key)
     

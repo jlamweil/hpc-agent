@@ -19,7 +19,7 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-}"
 VLLM_ENDPOINT="${VLLM_ENDPOINT:-http://localhost:8000}"
 VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.2-1B-Instruct}"
-WORKER_MODE="${WORKER_MODE:-mock}"
+WORKER_MODE="${WORKER_MODE:-transformers}"
 
 echo "=== Slurm Worker Starting ==="
 echo "Job ID: $SLURM_JOB_ID"
@@ -67,6 +67,8 @@ if [ "$WORKER_MODE" = "ollama" ]; then
     MODE_ARGS="--ollama --ollama-endpoint $VLLM_ENDPOINT"
 elif [ "$WORKER_MODE" = "vllm" ]; then
     MODE_ARGS="--vllm --vllm-endpoint $VLLM_ENDPOINT --vllm-model $VLLM_MODEL"
+elif [ "$WORKER_MODE" = "transformers" ]; then
+    MODE_ARGS="--transformers --transformers-model $VLLM_MODEL"
 else
     MODE_ARGS="--mock"
 fi

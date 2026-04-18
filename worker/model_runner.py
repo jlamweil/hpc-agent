@@ -136,3 +136,76 @@ class OllamaRunner(VLLMRunner):
             status=TaskStatus.FAILED,
             error=str(last_error),
         )
+
+
+class TransformersRunner(ModelRunner):
+    MAX_RETRIES = 2
+    
+    def __init__(self, model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
+        super().__init__(endpoint="transformers://", api_key=None)
+        self.model_name = model_name
+        self._model = None
+        self._tokenizer = None
+    
+    def _load_model(self):
+        if self._model is None:
+            import torch
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.float16,
+                device_map="auto"
+            )
+    
+    def run(self, task: LLMTask) -> TaskResult:
+        import torch
+        
+        last_error = None
+        
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                self._load_model()
+                
+                user_message = ""
+                if task.messages:
+                    for msg in task.messages:
+                        if msg.get("role") == "user":
+                            user_message = msg.get("content", "")
+                            break
+                
+                if not user_message and task.messages:
+                    user_message = str(task.messages[-1].get("content", ""))
+                
+                prompt = user_message or "Say OK"
+                
+                inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
+                outputs = self._model.generate(
+                    **inputs,
+                    max_new_tokens=256,
+                    do_sample=True,
+                    temperature=0.7,
+                )
+                response = self._tokenizer.decode(outputs[0], skip_special_tokens=True)
+                
+                if response.startswith(prompt):
+                    response = response[len(prompt):].strip()
+                
+                return TaskResult(
+                    task_id=task.task_id,
+                    status=TaskStatus.COMPLETED,
+                    content=response,
+                    tool_calls=None,
+                    finish_reason="stop",
+                )
+            except Exception as e:
+                last_error = e
+                if attempt < self.MAX_RETRIES - 1:
+                    time.sleep(1)
+        
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.FAILED,
+            error=str(last_error),
+        )
