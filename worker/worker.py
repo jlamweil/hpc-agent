@@ -89,6 +89,7 @@ if __name__ == "__main__":
     MockRunner = wmr.MockRunner
     OllamaRunner = wmr.OllamaRunner
     VLLMRunner = wmr.VLLMRunner
+    TransformersRunner = wmr.TransformersRunner
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-host", default="localhost")
