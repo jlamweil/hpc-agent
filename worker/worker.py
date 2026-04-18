@@ -1,14 +1,31 @@
-"""Worker - pulls tasks from queue and processes them."""
+"""Worker - pulls tasks from queue and processes tasks."""
 import time
 import sys
-sys.path.insert(0, ".")
-sys.path.insert(0, "/home/lam/Documents/GAIA/hpc-agent")
-import _setup
-from runtime.task_queue import TaskQueue, TaskStatus
+import importlib.util
+
+
+def _setup_paths():
+    hero = "/home/lam/Documents/GAIA/hpc-agent"
+    async_hermes = "/home/lam/Documents/GAIA/async-hermes-agent"
+    
+    # Find and load the async-hermes-agent runtime module
+    spec = importlib.util.spec_from_file_location(
+        "runtime_task_queue",
+        f"{async_hermes}/runtime/task_queue.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["runtime.task_queue"] = module
+    spec.loader.exec_module(module)
+    
+    # Return the classes we need
+    return module.TaskQueue, module.TaskStatus
+
+
+TaskQueue, TaskStatus = _setup_paths()
 
 
 class Worker:
-    def __init__(self, queue: TaskQueue, model_runner, worker_id: str = None,
+    def __init__(self, queue, model_runner, worker_id: str = None,
                  batch_size: int = 1):
         self.queue = queue
         self.runner = model_runner
@@ -50,6 +67,30 @@ class Worker:
 
 if __name__ == "__main__":
     import argparse
+    import importlib.util
+    
+    def load_module(path, name):
+        spec = importlib.util.spec_from_file_location(name, path)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+    
+    async_hermes = "/home/lam/Documents/GAIA/async-hermes-agent"
+    hero = "/home/lam/Documents/GAIA/hpc-agent"
+    
+    # Load runtime.task_queue
+    rtq = load_module(f"{async_hermes}/runtime/task_queue.py", "task_queue")
+    
+    # Load infra.redis_queue
+    irq = load_module(f"{hero}/infra/redis_queue.py", "redis_queue")
+    RedisTaskQueue = irq.RedisTaskQueue
+    
+    # Load worker.model_runner
+    wmr = load_module(f"{hero}/worker/model_runner.py", "model_runner")
+    MockRunner = wmr.MockRunner
+    OllamaRunner = wmr.OllamaRunner
+    VLLMRunner = wmr.VLLMRunner
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-host", default="localhost")
     parser.add_argument("--queue-port", type=int, default=6379)
@@ -66,21 +107,17 @@ if __name__ == "__main__":
     parser.add_argument("--ollama-endpoint", default="http://localhost:11434", help="Ollama endpoint")
     args = parser.parse_args()
 
-    from infra.redis_queue import RedisTaskQueue
     queue = RedisTaskQueue(host=args.queue_host, port=args.queue_port)
     
     if args.mock:
-        from worker.model_runner import MockRunner
         runner = MockRunner(
             response=args.mock_response,
             latency_min=args.latency_min,
             latency_max=args.latency_max,
         )
     elif args.ollama:
-        from worker.model_runner import OllamaRunner
         runner = OllamaRunner(endpoint=args.ollama_endpoint, model=args.ollama_model)
     else:
-        from worker.model_runner import VLLMRunner
         runner = VLLMRunner(endpoint=args.model_endpoint, api_key=args.api_key)
     
     worker = Worker(queue, runner, batch_size=args.batch_size)

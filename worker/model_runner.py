@@ -2,9 +2,11 @@
 import time
 import random
 import sys
-sys.path.insert(0, ".")
-sys.path.insert(0, "/home/lam/Documents/GAIA/hpc-agent")
-import _setup
+import os
+
+HERO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(HERO, "async-hermes-agent"))
+
 from runtime.task_queue import LLMTask, TaskResult, TaskStatus
 
 
