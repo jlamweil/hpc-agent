@@ -104,6 +104,9 @@ if __name__ == "__main__":
     parser.add_argument("--ollama", action="store_true", help="Use Ollama runner")
     parser.add_argument("--ollama-model", default="llama3:8b", help="Ollama model name")
     parser.add_argument("--ollama-endpoint", default="http://localhost:11434", help="Ollama endpoint")
+    parser.add_argument("--vllm", action="store_true", help="Use vLLM runner")
+    parser.add_argument("--vllm-endpoint", default="http://localhost:8000", help="vLLM endpoint")
+    parser.add_argument("--vllm-model", default="meta-llama/Llama-3.2-1B-Instruct", help="vLLM model name")
     args = parser.parse_args()
 
     queue = RedisTaskQueue(host=args.queue_host, port=args.queue_port)
@@ -116,6 +119,8 @@ if __name__ == "__main__":
         )
     elif args.ollama:
         runner = OllamaRunner(endpoint=args.ollama_endpoint, model=args.ollama_model)
+    elif args.vllm:
+        runner = VLLMRunner(endpoint=args.vllm_endpoint, model=args.vllm_model)
     else:
         runner = VLLMRunner(endpoint=args.model_endpoint, api_key=args.api_key)
     
