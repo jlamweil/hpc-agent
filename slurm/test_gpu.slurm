@@ -48,10 +48,10 @@ try:
     )
     print("Model loaded on GPU!")
     
-    # Quick inference test
-    messages = [{"role": "user", "content": "Say 'GPU OK'"}]
-    inputs = tokenizer.apply_chat_template(messages, return_tensors="pt").to(model.device)
-    outputs = model.generate(inputs, max_new_tokens=20, do_sample=False)
+    # Quick inference test - no chat template needed for TinyLlama
+    prompt = "Say 'GPU OK' in one word."
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    outputs = model.generate(**inputs, max_new_tokens=20, do_sample=False)
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
     print(f"Response: {response}")
     print("SUCCESS!")
