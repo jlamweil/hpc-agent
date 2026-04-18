@@ -15,56 +15,51 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_JOB_NODELIST"
 echo "================================"
 
-# Check GPU
-echo "GPU Info:"
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
-
-# Check disk
 echo ""
-echo "Disk Info:"
-df -h /tmp /var
 
-# Activate conda
+# Compute node has more space - install here
 source /usr/local/python/Miniconda/etc/profile.d/conda.sh
 conda activate autogluon-env
 
-# Try to import vLLM
-echo ""
-echo "Python environment:"
-python --version
-pip show vllm 2>/dev/null || echo "vLLM not installed"
+# Install transformers and accelerate
+echo "Installing transformers..."
+pip install transformers accelerate --quiet 2>/dev/null || pip install transformers accelerate
 
-# Try smaller model with transformers directly (bypass vLLM install)
-echo ""
-echo "Testing transformers inference..."
+# Set cache to /tmp
+export HF_HOME=/tmp/hf_cache
+export TRANSFORMERS_CACHE=/tmp/transformers_cache
+
 python << 'PYEOF'
-import os
-os.environ['HF_HOME'] = '/tmp/hf_cache'
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
-print("Loading small model...")
-model_name = "microsoft/Phi-3-mini-4k-instruct"  # ~7B, fits in GPU
+print("Loading tiny model...")
+model_name = "microsoft/Phi-3-mini-4k-instruct"
 
 try:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    print("Tokenizer loaded")
+    
     model = AutoModelForCausalLM.from_pretrained(
         model_name, 
         trust_remote_code=True,
         torch_dtype=torch.float16,
         device_map="auto"
     )
-    print("Model loaded successfully!")
+    print("Model loaded on GPU!")
     
-    # Test inference
-    messages = [{"role": "user", "content": "Say 'Hello from GPU'"}]
+    # Quick inference test
+    messages = [{"role": "user", "content": "Say 'GPU OK'"}]
     inputs = tokenizer.apply_chat_template(messages, return_tensors="pt").to(model.device)
-    outputs = model.generate(inputs, max_new_tokens=50)
+    outputs = model.generate(inputs, max_new_tokens=20, do_sample=False)
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
     print(f"Response: {response}")
+    print("SUCCESS!")
 except Exception as e:
     print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()
 PYEOF
 
-echo ""
 echo "Test complete."
