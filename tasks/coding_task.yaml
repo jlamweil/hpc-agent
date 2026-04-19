@@ -1,0 +1,19 @@
+name: coding_task
+description: Generate, review, and test Python code using multi-pass workflow.
+version: 1.0.0
+agents:
+  - coder
+  - reviewer
+steps:
+  - agent: coder
+    output: code
+    max_tokens: 512
+  - agent: reviewer
+    input: code
+    output: review
+    max_tokens: 256
+  - revision:
+      condition: "needs_work in review"
+      max_attempts: 2
+      agent: coder
+      input: review + original_task

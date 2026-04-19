@@ -1,0 +1,41 @@
+# HPC Agent Configuration
+
+local:
+  # SQLite database
+  sqlite_path: "tasks.db"
+  
+  # Queue monitor settings
+  batch_size: 5
+  max_retries: 3
+  max_parallel_jobs: 4
+  poll_interval: 10
+  
+  # Logging
+  log_file: "monitor.log"
+
+hpc:
+  # SSH connection
+  user: "jlam"
+  host: "hpc-login.u-strasbg.fr"
+  dir: "~/hpc-agent"
+  
+  # Redis (local on compute node)
+  redis_port: 6379
+  
+  # Model settings
+  model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  gpu_memory_utilization: 0.85
+  max_model_len: 2048
+  
+  # Slurm settings
+  partition: "publicgpu"
+  time_limit: "02:00:00"
+  mem: "8G"
+
+cleanup:
+  # Days to keep old tasks
+  completed_days: 30
+  failed_days: 7
+  
+  # Days to keep HPC results
+  hpc_results_days: 7
