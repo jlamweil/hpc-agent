@@ -29,8 +29,13 @@ VALID_TRANSITIONS = {
     "claimed": ["running", "pending"],
     "running": ["done", "failed"],
     "done": [],
-    "failed": []
+    "failed": ["pending"]
 }
+
+DEFAULT_MAX_ATTEMPTS = 3
+
+def compute_backoff(attempt: int) -> float:
+    return min(60 * (2 ** attempt), 3600)
 
 
 class SQLiteTaskQueue(TaskQueue):
@@ -139,6 +144,12 @@ class SQLiteTaskQueue(TaskQueue):
             conn.execute("ALTER TABLE tasks ADD COLUMN claimed_at REAL")
         if "attempt_count" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN attempt_count INTEGER DEFAULT 0")
+        if "max_attempts" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN max_attempts INTEGER DEFAULT 3")
+        if "last_error" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN last_error TEXT")
+        if "retry_at" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN retry_at REAL")
         conn.commit()
     
     def _validate_transition(self, from_state: str, to_state: str) -> bool:
@@ -327,14 +338,15 @@ class SQLiteTaskQueue(TaskQueue):
             SET status = 'claimed',
                 worker_id = ?,
                 claimed_at = ?,
-                attempt_count = attempt_count + 1
+                retry_at = NULL
             WHERE id IN (
                 SELECT id FROM tasks
                 WHERE status = 'pending'
+                AND (retry_at IS NULL OR retry_at <= ?)
                 ORDER BY priority DESC, created_at ASC
                 LIMIT ?
             )
-        """, (worker_id, now, batch_size))
+        """, (worker_id, now, now, batch_size))
         conn.commit()
         
         rows = conn.execute("""
@@ -355,6 +367,53 @@ class SQLiteTaskQueue(TaskQueue):
         """, (task_id,))
         conn.commit()
         return True
+    
+    def handle_task_failure(self, task_id: str, error: str) -> dict:
+        conn = self._get_conn()
+        row = conn.execute("""
+            SELECT attempt_count, max_attempts FROM tasks WHERE id = ?
+        """, (task_id,)).fetchone()
+        
+        if not row:
+            return {"action": "error", "message": "Task not found"}
+        
+        attempt = row[0] or 0
+        max_att = row[1] or DEFAULT_MAX_ATTEMPTS
+        
+        if attempt < max_att:
+            backoff = compute_backoff(attempt + 1)
+            retry_at = time.time() + backoff
+            conn.execute("""
+                UPDATE tasks
+                SET status = 'pending',
+                    worker_id = NULL,
+                    claimed_at = NULL,
+                    retry_at = ?,
+                    last_error = ?,
+                    attempt_count = attempt_count + 1
+                WHERE id = ?
+            """, (retry_at, error, task_id))
+            conn.commit()
+            return {
+                "action": "retry",
+                "retry_at": retry_at,
+                "attempt": attempt + 1,
+                "max_attempts": max_att
+            }
+        else:
+            conn.execute("""
+                UPDATE tasks
+                SET status = 'failed',
+                    last_error = ?,
+                    completed_at = ?
+                WHERE id = ?
+            """, (error, time.time(), task_id))
+            conn.commit()
+            return {
+                "action": "failed",
+                "attempt": attempt,
+                "max_attempts": max_att
+            }
     
     def mark_claimed_with_job(self, task_id: str, slurm_job_id: int):
         conn = self._get_conn()
@@ -400,11 +459,38 @@ class SQLiteTaskQueue(TaskQueue):
     def recover_stuck_running(self, timeout_seconds: int = 3600):
         conn = self._get_conn()
         cutoff = time.time() - timeout_seconds
-        conn.execute("""
-            UPDATE tasks
-            SET status = 'failed', completed_at = ?
+        
+        rows = conn.execute("""
+            SELECT id, attempt_count, max_attempts FROM tasks
             WHERE status = 'running' AND started_at < ?
-        """, (time.time(), cutoff))
+        """, (cutoff,)).fetchall()
+        
+        for row in rows:
+            task_id = row[0]
+            attempt = row[1] or 0
+            max_att = row[2] or DEFAULT_MAX_ATTEMPTS
+            
+            if attempt < max_att:
+                backoff = compute_backoff(attempt + 1)
+                retry_at = time.time() + backoff
+                conn.execute("""
+                    UPDATE tasks
+                    SET status = 'pending',
+                        worker_id = NULL,
+                        claimed_at = NULL,
+                        retry_at = ?,
+                        last_error = 'Stuck running - auto recovered'
+                    WHERE id = ?
+                """, (retry_at, task_id))
+            else:
+                conn.execute("""
+                    UPDATE tasks
+                    SET status = 'failed',
+                        last_error = 'Stuck running - max attempts reached',
+                        completed_at = ?
+                    WHERE id = ?
+                """, (time.time(), task_id))
+        
         conn.commit()
     
     def get_metrics(self) -> dict:
