@@ -55,7 +55,7 @@ cat benchmarks/benchmark_suite.log
 python -m pip install -e .
 
 # Run the async queue monitor (worker + scheduler)
-python -m hpc_agent.async_queue_monitor
+python -m async_queue_monitor
 ```
 
 ## Architecture
