@@ -357,8 +357,10 @@ class SQLiteTaskQueue(TaskQueue):
         fresh_count = int(batch_size * fresh_ratio)
         retry_count = batch_size - fresh_count
         
+        claimed_any = False
+        
         if retry_count > 0:
-            conn.execute("""
+            result = conn.execute("""
                 UPDATE tasks
                 SET status = 'claimed',
                     worker_id = ?,
@@ -374,8 +376,10 @@ class SQLiteTaskQueue(TaskQueue):
                     LIMIT ?
                 )
             """, (worker_id, now, now, retry_count))
+            if result.rowcount > 0:
+                claimed_any = True
         
-        if fresh_count > 0:
+        if fresh_count > 0 or not claimed_any:
             conn.execute("""
                 UPDATE tasks
                 SET status = 'claimed',
@@ -391,7 +395,7 @@ class SQLiteTaskQueue(TaskQueue):
                     ORDER BY priority DESC, created_at ASC
                     LIMIT ?
                 )
-            """, (worker_id, now, now, fresh_count))
+            """, (worker_id, now, now, max(fresh_count, batch_size)))
         
         conn.commit()
         
