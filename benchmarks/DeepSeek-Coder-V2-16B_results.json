@@ -1,0 +1,33 @@
+{
+  "model": "DeepSeek-Coder-V2-16B",
+  "batch_results": [
+    {
+      "batch_size": 1,
+      "avg_latency_sec": 0.01591911315917969,
+      "p95_latency_sec": 0.016963505744934083,
+      "throughput_tasks_per_sec": 62.81756967242577,
+      "iterations": 5
+    },
+    {
+      "batch_size": 2,
+      "avg_latency_sec": 0.013942623138427734,
+      "p95_latency_sec": 0.017712879180908202,
+      "throughput_tasks_per_sec": 143.44503040376475,
+      "iterations": 5
+    },
+    {
+      "batch_size": 4,
+      "avg_latency_sec": 0.014670705795288086,
+      "p95_latency_sec": 0.016097354888916015,
+      "throughput_tasks_per_sec": 272.65218564226905,
+      "iterations": 5
+    },
+    {
+      "batch_size": 8,
+      "avg_latency_sec": 0.014924144744873047,
+      "p95_latency_sec": 0.016680979728698732,
+      "throughput_tasks_per_sec": 536.0441175530862,
+      "iterations": 5
+    }
+  ]
+}

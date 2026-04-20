@@ -1,0 +1,143 @@
+=== HPC Agent Benchmark Suite ===
+
+DB cleared
+=== Benchmark 1: Throughput (Qwen2.5-Coder-32B) ===
+  Iteration 1: 0.015s, throughput: 66.35 tasks/s
+  Iteration 2: 0.013s, throughput: 77.97 tasks/s
+  Iteration 3: 0.016s, throughput: 61.92 tasks/s
+  Iteration 4: 0.017s, throughput: 59.79 tasks/s
+  Iteration 5: 0.016s, throughput: 61.00 tasks/s
+  Iteration 1: 0.014s, throughput: 140.94 tasks/s
+  Iteration 2: 0.014s, throughput: 143.63 tasks/s
+  Iteration 3: 0.014s, throughput: 138.82 tasks/s
+  Iteration 4: 0.013s, throughput: 156.69 tasks/s
+  Iteration 5: 0.017s, throughput: 116.66 tasks/s
+  Iteration 1: 0.014s, throughput: 280.06 tasks/s
+  Iteration 2: 0.012s, throughput: 322.64 tasks/s
+  Iteration 3: 0.014s, throughput: 295.06 tasks/s
+  Iteration 4: 0.015s, throughput: 260.59 tasks/s
+  Iteration 5: 0.017s, throughput: 238.68 tasks/s
+
+=== Results for Qwen2.5-Coder-32B ===
+{
+  "model": "Qwen2.5-Coder-32B",
+  "batch_results": [
+    {
+      "batch_size": 1,
+      "avg_latency_sec": 0.015433263778686524,
+      "p95_latency_sec": 0.016958999633789062,
+      "throughput_tasks_per_sec": 64.79510843202259,
+      "iterations": 5
+    },
+    {
+      "batch_size": 2,
+      "avg_latency_sec": 0.014485883712768554,
+      "p95_latency_sec": 0.019059157371520995,
+      "throughput_tasks_per_sec": 138.0654463101277,
+      "iterations": 5
+    },
+    {
+      "batch_size": 4,
+      "avg_latency_sec": 0.014469146728515625,
+      "p95_latency_sec": 0.017745661735534667,
+      "throughput_tasks_per_sec": 276.450303190087,
+      "iterations": 5
+    }
+  ]
+}
+
+DB cleared
+=== Benchmark 2: Correctness (Qwen2.5-Coder-32B) ===
+{
+  "model": "Qwen2.5-Coder-32B",
+  "total": 0,
+  "passed": 0,
+  "failed": 0,
+  "success_rate": 0,
+  "details": []
+}
+
+DB cleared
+=== Benchmark 3: Fairness (Qwen2.5-Coder-32B) ===
+{
+  "model": "Qwen2.5-Coder-32B",
+  "high_priority_tasks": 10,
+  "low_priority_tasks": 30,
+  "total_claimed": 20,
+  "high_claimed": 10,
+  "low_claimed": 4,
+  "fairness_ratio": 2.5,
+  "expected_high_ratio": 0.7,
+  "actual_high_ratio": 0.5
+}
+
+DB cleared
+=== Benchmark 4: Recovery (Qwen2.5-Coder-32B) ===
+{
+  "model": "Qwen2.5-Coder-32B",
+  "claimed_recovered": 5,
+  "claimed_total": 5,
+  "running_recovered": 3,
+  "running_total": 3,
+  "recovery_success": true
+}
+
+=== Benchmark 5: Throughput (DeepSeek-Coder-V2-16B) ===
+DB cleared
+  Iteration 1: 0.015s, throughput: 65.34 tasks/s
+  Iteration 2: 0.016s, throughput: 62.80 tasks/s
+  Iteration 3: 0.015s, throughput: 65.43 tasks/s
+  Iteration 4: 0.016s, throughput: 61.10 tasks/s
+  Iteration 5: 0.017s, throughput: 59.82 tasks/s
+  Iteration 1: 0.014s, throughput: 143.67 tasks/s
+  Iteration 2: 0.014s, throughput: 146.99 tasks/s
+  Iteration 3: 0.016s, throughput: 123.83 tasks/s
+  Iteration 4: 0.013s, throughput: 157.41 tasks/s
+  Iteration 5: 0.013s, throughput: 150.04 tasks/s
+  Iteration 1: 0.016s, throughput: 248.71 tasks/s
+  Iteration 2: 0.013s, throughput: 309.53 tasks/s
+  Iteration 3: 0.013s, throughput: 305.47 tasks/s
+  Iteration 4: 0.015s, throughput: 263.32 tasks/s
+  Iteration 5: 0.016s, throughput: 249.03 tasks/s
+  Iteration 1: 0.016s, throughput: 501.05 tasks/s
+  Iteration 2: 0.015s, throughput: 535.13 tasks/s
+  Iteration 3: 0.016s, throughput: 488.20 tasks/s
+  Iteration 4: 0.013s, throughput: 599.50 tasks/s
+  Iteration 5: 0.014s, throughput: 572.51 tasks/s
+
+=== Results for DeepSeek-Coder-V2-16B ===
+{
+  "model": "DeepSeek-Coder-V2-16B",
+  "batch_results": [
+    {
+      "batch_size": 1,
+      "avg_latency_sec": 0.01591911315917969,
+      "p95_latency_sec": 0.016963505744934083,
+      "throughput_tasks_per_sec": 62.81756967242577,
+      "iterations": 5
+    },
+    {
+      "batch_size": 2,
+      "avg_latency_sec": 0.013942623138427734,
+      "p95_latency_sec": 0.017712879180908202,
+      "throughput_tasks_per_sec": 143.44503040376475,
+      "iterations": 5
+    },
+    {
+      "batch_size": 4,
+      "avg_latency_sec": 0.014670705795288086,
+      "p95_latency_sec": 0.016097354888916015,
+      "throughput_tasks_per_sec": 272.65218564226905,
+      "iterations": 5
+    },
+    {
+      "batch_size": 8,
+      "avg_latency_sec": 0.014924144744873047,
+      "p95_latency_sec": 0.016680979728698732,
+      "throughput_tasks_per_sec": 536.0441175530862,
+      "iterations": 5
+    }
+  ]
+}
+
+=== All Benchmarks Complete ===

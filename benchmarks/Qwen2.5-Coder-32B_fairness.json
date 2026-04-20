@@ -1,0 +1,11 @@
+{
+  "model": "Qwen2.5-Coder-32B",
+  "high_priority_tasks": 10,
+  "low_priority_tasks": 30,
+  "total_claimed": 20,
+  "high_claimed": 10,
+  "low_claimed": 4,
+  "fairness_ratio": 2.5,
+  "expected_high_ratio": 0.7,
+  "actual_high_ratio": 0.5
+}

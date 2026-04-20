@@ -1,0 +1,26 @@
+{
+  "model": "Qwen2.5-Coder-32B",
+  "batch_results": [
+    {
+      "batch_size": 1,
+      "avg_latency_sec": 0.015433263778686524,
+      "p95_latency_sec": 0.016958999633789062,
+      "throughput_tasks_per_sec": 64.79510843202259,
+      "iterations": 5
+    },
+    {
+      "batch_size": 2,
+      "avg_latency_sec": 0.014485883712768554,
+      "p95_latency_sec": 0.019059157371520995,
+      "throughput_tasks_per_sec": 138.0654463101277,
+      "iterations": 5
+    },
+    {
+      "batch_size": 4,
+      "avg_latency_sec": 0.014469146728515625,
+      "p95_latency_sec": 0.017745661735534667,
+      "throughput_tasks_per_sec": 276.450303190087,
+      "iterations": 5
+    }
+  ]
+}
