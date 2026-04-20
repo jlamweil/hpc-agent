@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Async queue monitor - watches SQLite and triggers HPC batches."""
 import asyncio
 import os
-import sqlite3
 import subprocess
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -15,12 +14,14 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
 HPC_USER = os.environ.get("HPC_USER", "jlam")
 HPC_HOST = os.environ.get("HPC_HOST", "hpc-login.u-strasbg.fr")
 HPC_DIR = os.environ.get("HPC_DIR", "~/hpc-agent")
+CLAIM_TIMEOUT = int(os.environ.get("CLAIM_TIMEOUT", "600"))
 
 
 class AsyncQueueMonitor:
     def __init__(self, db_path: str = "tasks.db", batch_size: int = BATCH_SIZE,
                  hpc_user: str = HPC_USER, hpc_host: str = HPC_HOST,
-                 hpc_dir: str = HPC_DIR, dry_run: bool = False):
+                 hpc_dir: str = HPC_DIR, dry_run: bool = False,
+                 worker_id: str = None):
         self.queue = SQLiteTaskQueue(db_path=db_path)
         self.batch_size = batch_size
         self.hpc_user = hpc_user
@@ -28,16 +29,10 @@ class AsyncQueueMonitor:
         self.hpc_dir = hpc_dir
         self.dry_run = dry_run
         self.poll_interval = POLL_INTERVAL
+        self.worker_id = worker_id or f"monitor-{uuid.uuid4().hex[:8]}"
     
     async def get_pending_count(self) -> int:
         return self.queue.get_queue_size()
-    
-    async def get_pending_tasks(self) -> list:
-        tasks = self.queue.get_pending_tasks(limit=self.batch_size)
-        # Handle both dict and object formats
-        if tasks and isinstance(tasks[0], dict):
-            return tasks
-        return tasks
     
     async def sync_db_to_hpc(self) -> bool:
         cmd = ["rsync", "-av", self.queue.db_path, f"{self.hpc_user}@{self.hpc_host}:{self.hpc_dir}/"]
@@ -64,45 +59,45 @@ class AsyncQueueMonitor:
         
         output = result.stdout.strip()
         if "Submitted batch job" in output:
-            job_id = output.split()[-1]
-            for tid in task_ids:
-                self.queue.mark_running(tid)
-            return job_id
+            return output.split()[-1]
         return None
     
     async def run(self):
-        print(f"Async Queue Monitor starting (batch_size={self.batch_size})")
+        print(f"Queue Monitor starting (worker_id={self.worker_id}, batch_size={self.batch_size})")
         print(f"DB: {self.queue.db_path}, Poll interval: {self.poll_interval}s")
         
         while True:
             try:
-                pending = await self.get_pending_count()
-                print(f"Queue: {pending} pending, {self.queue.get_metrics()}")
+                self.queue.recover_stuck_claimed(CLAIM_TIMEOUT)
                 
-                if pending >= self.batch_size:
-                    tasks = await self.get_pending_tasks()
+                claimed = self.queue.claim_tasks(self.worker_id, self.batch_size)
+                
+                if claimed:
+                    task_ids = [t['id'] for t in claimed]
+                    print(f"Claimed {len(task_ids)} tasks: {[tid[:8] for tid in task_ids]}")
                     
-                    if tasks:
-                        # Handle both dict and object formats
-                        # Note: orchestrator uses "id" not "task_id"
-                        if isinstance(tasks[0], dict):
-                            task_ids = [t["id"] for t in tasks]
-                        else:
-                            task_ids = [t.id for t in tasks]
+                    sync_ok = await self.sync_db_to_hpc()
+                    
+                    if sync_ok:
+                        job_id = await self.submit_hpc_job(task_ids)
                         
-                        print(f"Batch ready ({len(task_ids)} tasks). Syncing to HPC...")
-                        sync_ok = await self.sync_db_to_hpc()
-                        
-                        if sync_ok:
-                            job_id = await self.submit_hpc_job(task_ids)
-                            
-                            if job_id and job_id != "dry-run-job-id":
-                                self.queue.update_slurm_job_id(task_ids, int(job_id))
-                                print(f"Submitted job {job_id} for {len(task_ids)} tasks")
+                        if job_id and job_id != "dry-run-job-id":
+                            for tid in task_ids:
+                                self.queue.mark_claimed_with_job(tid, int(job_id))
+                            print(f"Submitted job {job_id} for {len(task_ids)} tasks")
+                        elif job_id == "dry-run-job-id":
+                            print(f"[DRY RUN] Would submit {len(task_ids)} tasks")
                         else:
-                            print("Sync failed, skipping job submission")
+                            print("HPC submission failed, releasing tasks")
+                            for tid in task_ids:
+                                self.queue.release_task(tid)
+                    else:
+                        print("Sync failed, releasing tasks")
+                        for tid in task_ids:
+                            self.queue.release_task(tid)
                 else:
-                    print(f"Waiting for {self.batch_size - pending} more tasks...")
+                    pending = await self.get_pending_count()
+                    print(f"No tasks to claim. Pending: {pending}")
                 
             except KeyboardInterrupt:
                 print("\nStopping monitor")
@@ -124,6 +119,7 @@ async def main():
     parser.add_argument("--hpc-dir", default=HPC_DIR)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--poll-interval", type=int, default=POLL_INTERVAL)
+    parser.add_argument("--worker-id", default=None)
     
     args = parser.parse_args()
     
@@ -133,7 +129,8 @@ async def main():
         hpc_user=args.hpc_user,
         hpc_host=args.hpc_host,
         hpc_dir=args.hpc_dir,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        worker_id=args.worker_id
     )
     monitor.poll_interval = args.poll_interval
     

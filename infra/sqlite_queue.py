@@ -5,7 +5,7 @@ import time
 import uuid
 import threading
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, List
 import os
 import sys
 
@@ -14,6 +14,23 @@ ASYNC_HERMES = os.path.join(os.path.dirname(HERO_DIR), "async-hermes-agent")
 sys.path.insert(0, ASYNC_HERMES)
 
 from runtime.task_queue import TaskQueue, LLMTask, TaskResult, TaskStatus
+
+
+TASK_STATES = {
+    "pending": "pending",
+    "claimed": "claimed", 
+    "running": "running",
+    "done": "done",
+    "failed": "failed"
+}
+
+VALID_TRANSITIONS = {
+    "pending": ["claimed"],
+    "claimed": ["running", "pending"],
+    "running": ["done", "failed"],
+    "done": [],
+    "failed": []
+}
 
 
 class SQLiteTaskQueue(TaskQueue):
@@ -36,6 +53,7 @@ class SQLiteTaskQueue(TaskQueue):
     
     def _init_db(self):
         conn = self._get_conn()
+        
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
@@ -53,7 +71,10 @@ class SQLiteTaskQueue(TaskQueue):
                 completed_at REAL,
                 error TEXT,
                 slurm_job_id INTEGER,
-                retry_count INTEGER DEFAULT 0
+                retry_count INTEGER DEFAULT 0,
+                worker_id TEXT,
+                claimed_at REAL,
+                attempt_count INTEGER DEFAULT 0
             )
         """)
         
@@ -68,8 +89,12 @@ class SQLiteTaskQueue(TaskQueue):
             )
         """)
         
+        self._migrate_schema(conn)
+        
         conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON tasks(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_worker ON tasks(worker_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_claimed ON tasks(claimed_at)")
         conn.commit()
     
     def enqueue(self, task: LLMTask) -> str:
@@ -104,9 +129,33 @@ class SQLiteTaskQueue(TaskQueue):
         return task_id
     
     def _sync_to_hpc(self):
-        """Sync SQLite file to HPC (called from queue monitor)."""
-        # This will be called by the queue_monitor before submitting job
         pass
+    
+    def _migrate_schema(self, conn: sqlite3.Connection):
+        cols = {r[1]: i for i, r in enumerate(conn.execute("PRAGMA table_info(tasks)").fetchall())}
+        if "worker_id" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN worker_id TEXT")
+        if "claimed_at" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN claimed_at REAL")
+        if "attempt_count" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN attempt_count INTEGER DEFAULT 0")
+        conn.commit()
+    
+    def _validate_transition(self, from_state: str, to_state: str) -> bool:
+        allowed = VALID_TRANSITIONS.get(from_state, [])
+        return to_state in allowed
+    
+    def _transition_status(self, task_id: str, new_state: str) -> bool:
+        conn = self._get_conn()
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            return False
+        current = row[0]
+        if not self._validate_transition(current, new_state):
+            return False
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (new_state, task_id))
+        conn.commit()
+        return True
     
     def get_result(self, task_id: str, timeout: float) -> TaskResult:
         """Get task result with polling."""
@@ -124,7 +173,6 @@ class SQLiteTaskQueue(TaskQueue):
         )
     
     def get_result_nowait(self, task_id: str) -> Optional[TaskResult]:
-        """Get task result without waiting."""
         conn = self._get_conn()
         row = conn.execute(
             "SELECT * FROM tasks WHERE id = ?", (task_id,)
@@ -133,12 +181,12 @@ class SQLiteTaskQueue(TaskQueue):
         if not row:
             return None
         
-        if row['status'] not in [TaskStatus.COMPLETED.value, TaskStatus.FAILED.value]:
+        if row['status'] not in ["done", "failed"]:
             return None
         
         return TaskResult(
             task_id=task_id,
-            status=TaskStatus(row['status']),
+            status=TaskStatus.COMPLETED if row['status'] == "done" else TaskStatus.FAILED,
             content=json.loads(row['result'])['content'] if row['result'] else None,
             tool_calls=json.loads(row['result'])['tool_calls'] if row['result'] else None,
             reasoning=json.loads(row['result'])['reasoning'] if row['result'] else None,
@@ -150,11 +198,10 @@ class SQLiteTaskQueue(TaskQueue):
         )
     
     def mark_running(self, task_id: str) -> bool:
-        """Mark task as running."""
         conn = self._get_conn()
         cursor = conn.execute(
-            "UPDATE tasks SET status = ?, started_at = ? WHERE id = ? AND status = ?",
-            (TaskStatus.RUNNING.value, time.time(), task_id, TaskStatus.PENDING.value)
+            "UPDATE tasks SET status = 'running', started_at = ? WHERE id = ? AND status = 'claimed'",
+            (time.time(), task_id)
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -236,11 +283,9 @@ class SQLiteTaskQueue(TaskQueue):
         return tasks
     
     def get_queue_size(self) -> int:
-        """Get number of pending tasks."""
         conn = self._get_conn()
         result = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = ?",
-            (TaskStatus.PENDING.value,)
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'"
         ).fetchone()
         return result[0] if result else 0
     
@@ -266,7 +311,6 @@ class SQLiteTaskQueue(TaskQueue):
         conn.commit()
     
     def ping(self) -> bool:
-        """Check if database is accessible."""
         try:
             conn = self._get_conn()
             conn.execute("SELECT 1").fetchone()
@@ -274,36 +318,125 @@ class SQLiteTaskQueue(TaskQueue):
         except Exception:
             return False
     
+    def claim_tasks(self, worker_id: str, batch_size: int) -> List[dict]:
+        conn = self._get_conn()
+        now = time.time()
+        
+        conn.execute("""
+            UPDATE tasks
+            SET status = 'claimed',
+                worker_id = ?,
+                claimed_at = ?,
+                attempt_count = attempt_count + 1
+            WHERE id IN (
+                SELECT id FROM tasks
+                WHERE status = 'pending'
+                ORDER BY priority DESC, created_at ASC
+                LIMIT ?
+            )
+        """, (worker_id, now, batch_size))
+        conn.commit()
+        
+        rows = conn.execute("""
+            SELECT * FROM tasks
+            WHERE worker_id = ? AND claimed_at = ?
+        """, (worker_id, now)).fetchall()
+        
+        return [dict(row) for row in rows]
+    
+    def release_task(self, task_id: str) -> bool:
+        conn = self._get_conn()
+        conn.execute("""
+            UPDATE tasks
+            SET status = 'pending',
+                worker_id = NULL,
+                claimed_at = NULL
+            WHERE id = ? AND status = 'claimed'
+        """, (task_id,))
+        conn.commit()
+        return True
+    
+    def mark_claimed_with_job(self, task_id: str, slurm_job_id: int):
+        conn = self._get_conn()
+        conn.execute("""
+            UPDATE tasks SET slurm_job_id = ? WHERE id = ?
+        """, (slurm_job_id, task_id))
+        conn.commit()
+    
+    def update_task_status(self, task_id: str, status: str, 
+                          started_at: float = None, completed_at: float = None,
+                          result: str = None, error: str = None):
+        conn = self._get_conn()
+        set_clauses = ["status = ?"]
+        params = [status]
+        
+        if started_at is not None:
+            set_clauses.append("started_at = ?")
+            params.append(started_at)
+        if completed_at is not None:
+            set_clauses.append("completed_at = ?")
+            params.append(completed_at)
+        if result is not None:
+            set_clauses.append("result = ?")
+            params.append(result)
+        if error is not None:
+            set_clauses.append("error = ?")
+            params.append(error)
+        
+        params.append(task_id)
+        conn.execute(f"UPDATE tasks SET {', '.join(set_clauses)} WHERE id = ?", params)
+        conn.commit()
+    
+    def recover_stuck_claimed(self, timeout_seconds: int = 600):
+        conn = self._get_conn()
+        cutoff = time.time() - timeout_seconds
+        conn.execute("""
+            UPDATE tasks
+            SET status = 'pending', worker_id = NULL, claimed_at = NULL
+            WHERE status = 'claimed' AND claimed_at < ?
+        """, (cutoff,))
+        conn.commit()
+    
+    def recover_stuck_running(self, timeout_seconds: int = 3600):
+        conn = self._get_conn()
+        cutoff = time.time() - timeout_seconds
+        conn.execute("""
+            UPDATE tasks
+            SET status = 'failed', completed_at = ?
+            WHERE status = 'running' AND started_at < ?
+        """, (time.time(), cutoff))
+        conn.commit()
+    
     def get_metrics(self) -> dict:
-        """Get queue metrics."""
         conn = self._get_conn()
         
         pending = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = ?",
-            (TaskStatus.PENDING.value,)
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending'"
+        ).fetchone()[0]
+        
+        claimed = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'claimed'"
         ).fetchone()[0]
         
         running = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = ?",
-            (TaskStatus.RUNNING.value,)
+            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
         
         completed = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = ?",
-            (TaskStatus.COMPLETED.value,)
+            "SELECT COUNT(*) FROM tasks WHERE status = 'done'"
         ).fetchone()[0]
         
         failed = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = ?",
-            (TaskStatus.FAILED.value,)
+            "SELECT COUNT(*) FROM tasks WHERE status = 'failed'"
         ).fetchone()[0]
-        
+
         return {
             "pending": pending,
+            "claimed": claimed,
             "running": running,
             "completed": completed,
             "failed": failed,
-            "total": pending + running + completed + failed
+            "total": pending + claimed + running + completed + failed
         }
     
     def on_task_completed(self, task_id: str, callback):
