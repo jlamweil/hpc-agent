@@ -24,6 +24,13 @@ Production-ready distributed async HPC task system with SQLite single-source-of-
 - High priority claimed: 100% (10/10)
 - Overall fairness ratio: 2.5x (actual vs expected)
 
+## Multica Integration
+When using `multica daemon`:
+- AI assistant can review and optimize task execution
+- Multica runtime provides natural language debugging
+- Enhanced observability through multica's analysis tools
+- Model deployment via vLLM on HPC cluster (not via Copilot)
+
 ## Benchmark Usage
 
 ```bash
@@ -50,12 +57,31 @@ cat benchmarks/benchmark_suite.log
 
 ## Quick Start
 
+### With Multica (Recommended)
+```bash
+# 1. Start multica runtime daemon
+multica daemon start
+
+# 2. Run the async queue monitor (worker + scheduler)
+python async_queue_monitor.py
+```
+
+### Standalone (Without Multica)
 ```bash
 # Install dependencies
 python -m pip install -e .
 
-# Run the async queue monitor (worker + scheduler)
-python -m async_queue_monitor
+# Run the async queue monitor directly
+python async_queue_monitor.py
+```
+
+### Without Multica
+```bash
+# Install dependencies
+python -m pip install -e .
+
+# Run the async queue monitor directly
+python async_queue_monitor.py
 ```
 
 ## Architecture
@@ -63,6 +89,7 @@ python -m async_queue_monitor
 - **SQLite** is the single source of truth for all task state.
 - **`sqlite_queue.py`** — core queue: claims, state machine, retry, metrics.
 - **`async_queue_monitor.py`** — worker/scheduler: multi-threshold job spawning, stuck-task recovery.
+- **Multica Integration** — AI assistant layer via `multica daemon` for enhanced debugging and optimization.
 - Tasks flow: `pending → claimed → running → done/failed` (failed tasks retry with exponential backoff).
 
 ## Task Submission (No LLM Required)
@@ -100,7 +127,9 @@ task_id = q.enqueue(
 - **DeepSeek R1 70B** (4-bit Q4_K_M): ~40–50 GB VRAM; similar constraints.
 - **Qwen2.5 72B** (4-bit Q4_K_M): ~42–54 GB VRAM; use small batch sizes (1–2).
 
-> Guidance: 48GB+ VRAM recommended for 70B-class models at Q4_K_M. If you must run larger models, reduce batch size and use `max_new_tokens` limits. For 24–48GB systems, prefer 16B-class models or 70B at Q5_K_M/Q6_K_M with very small batches.
+> Guidance: 48GB+ VRAM recommended for 70B-class models at Q4_K_M. If you must run larger models, use vLLM on HPC cluster with appropriate GPU memory. For 24–48GB systems, prefer 16B-class models or 70B at Q5_K_M/Q6_K_M with very small batches.
+
+> Note: Model deployment via vLLM on HPC cluster (not via Copilot).
 
 ### Parallelization Notes
 - Multiple workers can run concurrently; each worker runs its own Slurm job submissions.
