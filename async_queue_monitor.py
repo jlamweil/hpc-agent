@@ -64,7 +64,10 @@ class AsyncQueueMonitor:
         
         output = result.stdout.strip()
         if "Submitted batch job" in output:
-            return output.split()[-1]
+            job_id = output.split()[-1]
+            for tid in task_ids:
+                self.queue.mark_running(tid)
+            return job_id
         return None
     
     async def run(self):
@@ -81,10 +84,11 @@ class AsyncQueueMonitor:
                     
                     if tasks:
                         # Handle both dict and object formats
+                        # Note: orchestrator uses "id" not "task_id"
                         if isinstance(tasks[0], dict):
-                            task_ids = [t["task_id"] for t in tasks]
+                            task_ids = [t["id"] for t in tasks]
                         else:
-                            task_ids = [t.task_id for t in tasks]
+                            task_ids = [t.id for t in tasks]
                         
                         print(f"Batch ready ({len(task_ids)} tasks). Syncing to HPC...")
                         sync_ok = await self.sync_db_to_hpc()

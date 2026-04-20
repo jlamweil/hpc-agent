@@ -245,9 +245,10 @@ class SQLiteTaskQueue(TaskQueue):
         return result[0] if result else 0
     
     def get_pending_tasks(self, limit: int = None) -> list[dict]:
-        """Get list of pending tasks (for monitoring)."""
         conn = self._get_conn()
-        query = "SELECT * FROM tasks WHERE status = ? ORDER BY created_at"
+        query = """SELECT * FROM tasks 
+            WHERE status = ? AND slurm_job_id IS NULL 
+            ORDER BY priority DESC, created_at ASC"""
         if limit:
             query += f" LIMIT {limit}"
         
