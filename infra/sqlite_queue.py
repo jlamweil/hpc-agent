@@ -34,8 +34,27 @@ VALID_TRANSITIONS = {
 
 DEFAULT_MAX_ATTEMPTS = 3
 
+DETERMINISTIC_ERRORS = frozenset([
+    "invalid json",
+    "parse error",
+    "syntax error",
+    "invalid prompt",
+    "model not found",
+    "invalid request",
+    "authentication failed",
+    "unauthorized",
+    "rate limit exceeded",
+    "quota exceeded",
+])
+
 def compute_backoff(attempt: int) -> float:
     return min(60 * (2 ** attempt), 3600)
+
+def is_deterministic_error(error: str) -> bool:
+    if not error:
+        return False
+    error_lower = error.lower()
+    return any(known in error_lower for known in DETERMINISTIC_ERRORS)
 
 
 class SQLiteTaskQueue(TaskQueue):
@@ -150,6 +169,8 @@ class SQLiteTaskQueue(TaskQueue):
             conn.execute("ALTER TABLE tasks ADD COLUMN last_error TEXT")
         if "retry_at" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN retry_at REAL")
+        if "task_type" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'llm'")
         conn.commit()
     
     def _validate_transition(self, from_state: str, to_state: str) -> bool:
@@ -329,24 +350,49 @@ class SQLiteTaskQueue(TaskQueue):
         except Exception:
             return False
     
-    def claim_tasks(self, worker_id: str, batch_size: int) -> List[dict]:
+    def claim_tasks(self, worker_id: str, batch_size: int, fresh_ratio: float = 0.7) -> List[dict]:
         conn = self._get_conn()
         now = time.time()
         
-        conn.execute("""
-            UPDATE tasks
-            SET status = 'claimed',
-                worker_id = ?,
-                claimed_at = ?,
-                retry_at = NULL
-            WHERE id IN (
-                SELECT id FROM tasks
-                WHERE status = 'pending'
-                AND (retry_at IS NULL OR retry_at <= ?)
-                ORDER BY priority DESC, created_at ASC
-                LIMIT ?
-            )
-        """, (worker_id, now, now, batch_size))
+        fresh_count = int(batch_size * fresh_ratio)
+        retry_count = batch_size - fresh_count
+        
+        if retry_count > 0:
+            conn.execute("""
+                UPDATE tasks
+                SET status = 'claimed',
+                    worker_id = ?,
+                    claimed_at = ?,
+                    retry_at = NULL,
+                    attempt_count = COALESCE(attempt_count, 0) + 1
+                WHERE id IN (
+                    SELECT id FROM tasks
+                    WHERE status = 'pending'
+                    AND (retry_at IS NULL OR retry_at <= ?)
+                    AND attempt_count > 0
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT ?
+                )
+            """, (worker_id, now, now, retry_count))
+        
+        if fresh_count > 0:
+            conn.execute("""
+                UPDATE tasks
+                SET status = 'claimed',
+                    worker_id = ?,
+                    claimed_at = ?,
+                    retry_at = NULL,
+                    attempt_count = COALESCE(attempt_count, 0) + 1
+                WHERE id IN (
+                    SELECT id FROM tasks
+                    WHERE status = 'pending'
+                    AND (retry_at IS NULL OR retry_at <= ?)
+                    AND (attempt_count IS NULL OR attempt_count = 0)
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT ?
+                )
+            """, (worker_id, now, now, fresh_count))
+        
         conn.commit()
         
         rows = conn.execute("""
@@ -371,7 +417,7 @@ class SQLiteTaskQueue(TaskQueue):
     def handle_task_failure(self, task_id: str, error: str) -> dict:
         conn = self._get_conn()
         row = conn.execute("""
-            SELECT attempt_count, max_attempts FROM tasks WHERE id = ?
+            SELECT attempt_count, max_attempts, priority FROM tasks WHERE id = ?
         """, (task_id,)).fetchone()
         
         if not row:
@@ -379,10 +425,26 @@ class SQLiteTaskQueue(TaskQueue):
         
         attempt = row[0] or 0
         max_att = row[1] or DEFAULT_MAX_ATTEMPTS
+        current_priority = row[2] or 0
+        
+        if is_deterministic_error(error):
+            conn.execute("""
+                UPDATE tasks
+                SET status = 'failed',
+                    last_error = ?,
+                    completed_at = ?
+                WHERE id = ?
+            """, (error, time.time(), task_id))
+            conn.commit()
+            return {
+                "action": "failed_deterministic",
+                "reason": "deterministic error - no retry"
+            }
         
         if attempt < max_att:
             backoff = compute_backoff(attempt + 1)
             retry_at = time.time() + backoff
+            new_priority = max(-5, current_priority - 1)
             conn.execute("""
                 UPDATE tasks
                 SET status = 'pending',
@@ -390,15 +452,18 @@ class SQLiteTaskQueue(TaskQueue):
                     claimed_at = NULL,
                     retry_at = ?,
                     last_error = ?,
-                    attempt_count = attempt_count + 1
+                    attempt_count = attempt_count + 1,
+                    priority = ?
                 WHERE id = ?
-            """, (retry_at, error, task_id))
+            """, (retry_at, error, new_priority, task_id))
             conn.commit()
             return {
                 "action": "retry",
                 "retry_at": retry_at,
                 "attempt": attempt + 1,
-                "max_attempts": max_att
+                "max_attempts": max_att,
+                "old_priority": current_priority,
+                "new_priority": new_priority
             }
         else:
             conn.execute("""
@@ -515,14 +580,42 @@ class SQLiteTaskQueue(TaskQueue):
         failed = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status = 'failed'"
         ).fetchone()[0]
-
+        
+        fresh_pending = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending' AND (attempt_count IS NULL OR attempt_count = 0)"
+        ).fetchone()[0]
+        
+        retry_pending = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'pending' AND attempt_count > 0"
+        ).fetchone()[0]
+        
+        total_attempts = conn.execute(
+            "SELECT SUM(COALESCE(attempt_count, 0)) FROM tasks"
+        ).fetchone()[0] or 0
+        
+        avg_queue_delay = conn.execute("""
+            SELECT AVG(claimed_at - created_at) FROM tasks 
+            WHERE claimed_at IS NOT NULL
+        """).fetchone()[0] or 0
+        
+        avg_exec_time = conn.execute("""
+            SELECT AVG(completed_at - started_at) FROM tasks 
+            WHERE started_at IS NOT NULL AND completed_at IS NOT NULL
+        """).fetchone()[0] or 0
+        
         return {
             "pending": pending,
             "claimed": claimed,
             "running": running,
             "completed": completed,
             "failed": failed,
-            "total": pending + claimed + running + completed + failed
+            "total": pending + claimed + running + completed + failed,
+            "fresh_pending": fresh_pending,
+            "retry_pending": retry_pending,
+            "total_attempts": total_attempts,
+            "retry_rate": (total_attempts / max(1, completed + failed)),
+            "avg_queue_delay_sec": avg_queue_delay,
+            "avg_execution_time_sec": avg_exec_time
         }
     
     def on_task_completed(self, task_id: str, callback):

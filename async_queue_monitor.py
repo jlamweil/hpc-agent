@@ -15,13 +15,17 @@ HPC_USER = os.environ.get("HPC_USER", "jlam")
 HPC_HOST = os.environ.get("HPC_HOST", "hpc-login.u-strasbg.fr")
 HPC_DIR = os.environ.get("HPC_DIR", "~/hpc-agent")
 CLAIM_TIMEOUT = int(os.environ.get("CLAIM_TIMEOUT", "600"))
+HIGH_THRESHOLD = int(os.environ.get("HIGH_THRESHOLD", "20"))
+LOW_THRESHOLD = int(os.environ.get("LOW_THRESHOLD", "5"))
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "3"))
 
 
 class AsyncQueueMonitor:
     def __init__(self, db_path: str = "tasks.db", batch_size: int = BATCH_SIZE,
                  hpc_user: str = HPC_USER, hpc_host: str = HPC_HOST,
                  hpc_dir: str = HPC_DIR, dry_run: bool = False,
-                 worker_id: str = None):
+                 worker_id: str = None, high_threshold: int = HIGH_THRESHOLD,
+                 low_threshold: int = LOW_THRESHOLD, max_jobs: int = MAX_CONCURRENT_JOBS):
         self.queue = SQLiteTaskQueue(db_path=db_path)
         self.batch_size = batch_size
         self.hpc_user = hpc_user
@@ -30,6 +34,10 @@ class AsyncQueueMonitor:
         self.dry_run = dry_run
         self.poll_interval = POLL_INTERVAL
         self.worker_id = worker_id or f"monitor-{uuid.uuid4().hex[:8]}"
+        self.high_threshold = high_threshold
+        self.low_threshold = low_threshold
+        self.max_jobs = max_jobs
+        self.active_jobs = 0
     
     async def get_pending_count(self) -> int:
         return self.queue.get_queue_size()
@@ -65,39 +73,59 @@ class AsyncQueueMonitor:
     async def run(self):
         print(f"Queue Monitor starting (worker_id={self.worker_id}, batch_size={self.batch_size})")
         print(f"DB: {self.queue.db_path}, Poll interval: {self.poll_interval}s")
+        print(f"Thresholds: high={self.high_threshold}, low={self.low_threshold}, max_jobs={self.max_jobs}")
         
         while True:
             try:
+                metrics = self.queue.get_metrics()
+                pending = metrics.get('pending', 0)
+                
                 self.queue.recover_stuck_claimed(CLAIM_TIMEOUT)
                 
-                claimed = self.queue.claim_tasks(self.worker_id, self.batch_size)
+                if pending < self.low_threshold:
+                    print(f"Queue low ({pending}), waiting...")
+                    await asyncio.sleep(self.poll_interval)
+                    continue
                 
-                if claimed:
-                    task_ids = [t['id'] for t in claimed]
-                    print(f"Claimed {len(task_ids)} tasks: {[tid[:8] for tid in task_ids]}")
+                if self.active_jobs >= self.max_jobs:
+                    print(f"Max jobs ({self.max_jobs}) reached, waiting...")
+                    await asyncio.sleep(self.poll_interval)
+                    continue
+                
+                jobs_to_spawn = 1
+                if pending >= self.high_threshold:
+                    jobs_to_spawn = min(self.max_jobs - self.active_jobs, pending // self.batch_size + 1)
+                    print(f"Queue high ({pending}), spawning {jobs_to_spawn} jobs")
+                
+                for _ in range(jobs_to_spawn):
+                    claimed = self.queue.claim_tasks(self.worker_id, self.batch_size)
                     
-                    sync_ok = await self.sync_db_to_hpc()
-                    
-                    if sync_ok:
-                        job_id = await self.submit_hpc_job(task_ids)
+                    if claimed:
+                        task_ids = [t['id'] for t in claimed]
+                        print(f"Claimed {len(task_ids)} tasks: {[tid[:8] for tid in task_ids]}")
                         
-                        if job_id and job_id != "dry-run-job-id":
-                            for tid in task_ids:
-                                self.queue.mark_claimed_with_job(tid, int(job_id))
-                            print(f"Submitted job {job_id} for {len(task_ids)} tasks")
-                        elif job_id == "dry-run-job-id":
-                            print(f"[DRY RUN] Would submit {len(task_ids)} tasks")
+                        sync_ok = await self.sync_db_to_hpc()
+                        
+                        if sync_ok:
+                            job_id = await self.submit_hpc_job(task_ids)
+                            
+                            if job_id and job_id != "dry-run-job-id":
+                                self.active_jobs += 1
+                                for tid in task_ids:
+                                    self.queue.mark_claimed_with_job(tid, int(job_id))
+                                print(f"Submitted job {job_id} for {len(task_ids)} tasks (active: {self.active_jobs})")
+                            elif job_id == "dry-run-job-id":
+                                print(f"[DRY RUN] Would submit {len(task_ids)} tasks")
+                            else:
+                                print("HPC submission failed, releasing tasks")
+                                for tid in task_ids:
+                                    self.queue.release_task(tid)
                         else:
-                            print("HPC submission failed, releasing tasks")
+                            print("Sync failed, releasing tasks")
                             for tid in task_ids:
                                 self.queue.release_task(tid)
-                    else:
-                        print("Sync failed, releasing tasks")
-                        for tid in task_ids:
-                            self.queue.release_task(tid)
-                else:
-                    pending = await self.get_pending_count()
-                    print(f"No tasks to claim. Pending: {pending}")
+                
+                print(f"Metrics: {metrics}")
                 
             except KeyboardInterrupt:
                 print("\nStopping monitor")
