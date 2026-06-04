@@ -54,10 +54,12 @@ hpc:
     # Model
     model: "deepseek-ai/DeepSeek-V4-Flash"
   
-  # Slurm settings (legacy)
-  partition: "publicgpu"
-  time_limit: "02:00:00"
-  mem: "8G"
+  # Slurm settings (used by hpc_batch.py dispatch)
+  partition: "pri2021gpu"
+  account: "qosmivgpu"
+  qos: "preemptqos"
+  time_limit: "06:00:00"
+  mem: "128G"
 
 cleanup:
   # Days to keep old tasks
