@@ -145,6 +145,20 @@ if [ "$PENDING_COUNT" -eq 0 ] && [ "$BATCH_SIZE" -ne 0 ]; then
     exit 0
 fi
 
+# ── Register deepseek_v4 model type ──────────────────────────────────────────
+python3 -c "
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+import transformers.models.auto.configuration_auto as cfg_auto
+if 'deepseek_v4' not in cfg_auto.CONFIG_MAPPING:
+    cfg_auto.CONFIG_MAPPING['deepseek_v4'] = cfg_auto.AutoConfig
+    print('Registered deepseek_v4')
+" 2>&1 | sed 's/^/[register] /'
+
+# ── Resolve local model path ────────────────────────────────────────────────
+MODEL_PATH="$HF_HOME/models--deepseek-ai--DeepSeek-V4-Flash/snapshots/$(ls $HF_HOME/models--deepseek-ai--DeepSeek-V4-Flash/snapshots/ 2>/dev/null | tail -1)"
+echo "[$(date -Iseconds)] Model path: $MODEL_PATH"
+ls "$MODEL_PATH"/config.json 2>/dev/null && echo "  Config: OK" || echo "  Config: MISSING"
+
 # ── Detect GPUs ──────────────────────────────────────────────────────────────
 TP=$(python3 -c "import torch; print(torch.cuda.device_count() if torch.cuda.is_available() else 2)" 2>/dev/null || echo "2")
 echo "[$(date -Iseconds)] Available GPUs: $TP"
@@ -152,7 +166,7 @@ echo "[$(date -Iseconds)] Available GPUs: $TP"
 # ── Start vLLM ──────────────────────────────────────────────────────────────
 echo "[$(date -Iseconds)] Starting vLLM server..."
 python -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL" \
+    --model "$MODEL_PATH" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
     --tensor-parallel-size "$TP" \
     --gpu-memory-utilization 0.88 \
@@ -164,7 +178,6 @@ python -m vllm.entrypoints.openai.api_server \
     --tool-call-parser deepseek_v4 \
     --reasoning-parser deepseek_v4 \
     --no-disable-hybrid-kv-cache-manager \
-    --enforce-eager \
     > "$LOG_DIR/vllm-${SLURM_JOB_ID}.log" 2>&1 &
 
 VLLM_PID=$!
@@ -172,7 +185,7 @@ echo "[$(date -Iseconds)] vLLM PID: $VLLM_PID"
 
 # Wait for vLLM to be ready
 echo "[$(date -Iseconds)] Waiting for vLLM to be ready..."
-for i in $(seq 1 120); do
+for i in $(seq 1 270); do
     if curl -s --max-time 10 "http://127.0.0.1:${VLLM_PORT}/v1/models" > /dev/null 2>&1; then
         echo "[$(date -Iseconds)] vLLM ready! (${i}s)"
         break
