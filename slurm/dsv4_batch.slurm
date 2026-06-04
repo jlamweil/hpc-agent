@@ -116,22 +116,9 @@ fi
 
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-MODEL_CACHE="$HOME/hf_cache"
-
-# Copy model to local NVMe /scratch for fast loading
-LOCAL_CACHE="/scratch/${SLURM_JOB_ID}/hf_cache"
-if [ -d "$MODEL_CACHE/models--deepseek-ai--DeepSeek-V4-Flash" ]; then
-    echo "[$(date -Iseconds)] Copying model to local NVMe (/scratch)..."
-    mkdir -p "$LOCAL_CACHE"
-    time cp -rL "$MODEL_CACHE/models--deepseek-ai--DeepSeek-V4-Flash" "$LOCAL_CACHE/"
-    echo "[$(date -Iseconds)] Model copied: $(du -sh $LOCAL_CACHE/models--deepseek-ai--DeepSeek-V4-Flash | cut -f1)"
-    export NCCL_NET=Socket
-export HF_HOME="$LOCAL_CACHE"
-else
-    echo "[$(date -Iseconds)] Model not in cache, using BeeGFS"
-    export NCCL_NET=Socket
-export HF_HOME="$MODEL_CACHE"
-fi
+export NCCL_NET=Socket
+export HF_HOME="$HOME/hf_cache"
+echo "[$(date -Iseconds)] HF_HOME=$HF_HOME (BeeGFS — model loads via network)"
 mkdir -p "$HF_HOME"
 
 # ── Check DB exists ─────────────────────────────────────────────────────────
