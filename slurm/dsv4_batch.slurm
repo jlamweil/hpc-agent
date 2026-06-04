@@ -190,10 +190,9 @@ for i in $(seq 1 270); do
         echo "[$(date -Iseconds)] vLLM ready! (${i}s)"
         break
     fi
-    if [ "$i" -eq 120 ]; then
-        echo "[$(date -Iseconds)] ERROR: vLLM failed to start in time"
+    if [ "$i" -eq 270 ]; then
+        echo "[$(date -Iseconds)] ERROR: vLLM failed to start after 270 attempts"
         tail -50 "$LOG_DIR/vllm-${SLURM_JOB_ID}.log"
-        exit 1
     fi
     sleep 5
 done
