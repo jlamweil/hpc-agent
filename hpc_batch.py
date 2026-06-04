@@ -351,9 +351,13 @@ def collect_results(hpc_config: dict[str, str] | None = None, db_path: str = "")
 
         try:
             summary = json.loads(summary_text)
-            job_id = summary.get("slurm_job_id")
+            job_id = summary.get("slurm_job_id") or summary.get("job")
         except json.JSONDecodeError:
             job_id = remote_dir.split("-")[-1]
+        
+        # Fallback: use directory name if job_id is still unknown
+        if not job_id or str(job_id) == "None":
+            job_id = remote_dir.rstrip("/").split("-")[-1]
 
         # rsync the completed DB back
         remote_db_path = f"{remote_dir}/tasks-completed.db"
@@ -384,9 +388,21 @@ def merge_results(source_db: str, target_db: str, job_id: str = ""):
         print(f"[merge] Source DB not found: {source_db}")
         return
 
+    if os.path.getsize(source_db) == 0:
+        print(f"[merge] Source DB is empty: {source_db}")
+        return
+
     src = sqlite3.connect(source_db)
     tgt = sqlite3.connect(target_db)
     init_db(target_db)
+
+    # Check if source has a tasks table
+    tables = src.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'").fetchall()
+    if not tables:
+        print(f"[merge] No tasks table in source DB: {source_db}")
+        src.close()
+        tgt.close()
+        return
 
     # Update tasks that exist in target with results from source
     rows = src.execute("""
