@@ -105,7 +105,7 @@ else
 fi
 
 # Critical env vars MUST be set before any vLLM import (including the version check)
-export NCCL_NET=Socket
+# NCCL_NET left unset — system default (IB) works on H100 nodes; Socket caused TCPStore timeouts
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HOME="$HOME/hf_cache"
