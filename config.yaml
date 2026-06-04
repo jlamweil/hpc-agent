@@ -12,6 +12,15 @@ local:
   
   # Logging
   log_file: "monitor.log"
+  
+  # Batch dispatch settings
+  batch:
+    # Minimum pending tasks before auto-dispatch
+    min_pending: 10
+    # Accumulate at most this many tasks per batch
+    max_batch: 200
+    # Model for HPC inference
+    model: "deepseek-ai/DeepSeek-V4-Flash"
 
 hpc:
   # SSH connection
@@ -22,12 +31,30 @@ hpc:
   # Redis (local on compute node)
   redis_port: 6379
   
-  # Model settings
+  # Model settings (legacy — use dsv4_batch.slurm for DS V4 Flash)
   model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   gpu_memory_utilization: 0.85
   max_model_len: 2048
   
-  # Slurm settings
+  # DS V4 Flash batch settings
+  dsv4:
+    # Partition with competitive queue times
+    partition: "pri2021gpu"
+    account: "qosmivgpu"
+    qos: "preemptqos"
+    # vLLM settings
+    tensor_parallel: 4
+    gpu_memory_utilization: 0.92
+    max_model_len: 4096
+    kv_cache_dtype: "fp8"
+    # Job time (12h timeout, occupies H100 80GB)
+    time_limit: "12:00:00"
+    mem: "128G"
+    gres: "gpu:4"
+    # Model
+    model: "deepseek-ai/DeepSeek-V4-Flash"
+  
+  # Slurm settings (legacy)
   partition: "publicgpu"
   time_limit: "02:00:00"
   mem: "8G"
