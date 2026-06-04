@@ -125,10 +125,12 @@ if [ -d "$MODEL_CACHE/models--deepseek-ai--DeepSeek-V4-Flash" ]; then
     mkdir -p "$LOCAL_CACHE"
     time cp -rL "$MODEL_CACHE/models--deepseek-ai--DeepSeek-V4-Flash" "$LOCAL_CACHE/"
     echo "[$(date -Iseconds)] Model copied: $(du -sh $LOCAL_CACHE/models--deepseek-ai--DeepSeek-V4-Flash | cut -f1)"
-    export HF_HOME="$LOCAL_CACHE"
+    export NCCL_NET=Socket
+export HF_HOME="$LOCAL_CACHE"
 else
     echo "[$(date -Iseconds)] Model not in cache, using BeeGFS"
-    export HF_HOME="$MODEL_CACHE"
+    export NCCL_NET=Socket
+export HF_HOME="$MODEL_CACHE"
 fi
 mkdir -p "$HF_HOME"
 
@@ -170,6 +172,7 @@ python -m vllm.entrypoints.openai.api_server \
     --tool-call-parser deepseek_v4 \
     --reasoning-parser deepseek_v4 \
     --no-disable-hybrid-kv-cache-manager \
+    --enforce-eager \
     > "$LOG_DIR/vllm-${SLURM_JOB_ID}.log" 2>&1 &
 
 VLLM_PID=$!
@@ -178,7 +181,7 @@ echo "[$(date -Iseconds)] vLLM PID: $VLLM_PID"
 # Wait for vLLM to be ready
 echo "[$(date -Iseconds)] Waiting for vLLM to be ready..."
 for i in $(seq 1 120); do
-    if curl -s "http://localhost:${VLLM_PORT}/v1/models" > /dev/null 2>&1; then
+    if curl -s --max-time 10 "http://127.0.0.1:${VLLM_PORT}/v1/models" > /dev/null 2>&1; then
         echo "[$(date -Iseconds)] vLLM ready! (${i}s)"
         break
     fi
@@ -191,7 +194,7 @@ for i in $(seq 1 120); do
 done
 
 # Verify model loaded
-curl -s "http://localhost:${VLLM_PORT}/v1/models" | python3 -m json.tool 2>/dev/null || \
+curl -s --max-time 10 "http://127.0.0.1:${VLLM_PORT}/v1/models" | python3 -m json.tool 2>/dev/null || \
     echo "[WARN] Could not verify loaded models"
 
 # ── Process tasks ───────────────────────────────────────────────────────────
@@ -268,7 +271,7 @@ except Exception as e:
 
 print(f"  Claimed {len(rows)} tasks")
 
-api_base = f"http://localhost:{vllm_port}"
+api_base = f"http://127.0.0.1:{vllm_port}"
 
 def call_vllm(messages, model_name):
     """Call vLLM API with retries."""
