@@ -124,8 +124,29 @@ api_base = "http://127.0.0.1:8000"
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 
+# Ensure task_deps table exists (migration for older DBs)
+conn.execute("""
+    CREATE TABLE IF NOT EXISTS task_deps (
+        task_id TEXT NOT NULL,
+        depends_on TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (task_id, depends_on)
+    )
+""")
+
 conn.execute("BEGIN IMMEDIATE")
-rows = conn.execute("SELECT id, messages FROM tasks WHERE status = 'pending' ORDER BY created_at ASC LIMIT 50").fetchall()
+rows = conn.execute("""
+    SELECT id, messages FROM tasks
+    WHERE status = 'pending'
+      AND NOT EXISTS (
+          SELECT 1 FROM task_deps
+          WHERE task_deps.task_id = tasks.id
+            AND task_deps.depends_on NOT IN (
+                SELECT id FROM tasks WHERE status = 'completed'
+            )
+      )
+    ORDER BY created_at ASC LIMIT 50
+""").fetchall()
 if not rows:
     conn.execute("ROLLBACK"); conn.close(); sys.exit(0)
 task_ids = [r['id'] for r in rows]

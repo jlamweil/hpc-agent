@@ -28,6 +28,17 @@ Usage:
 
     # Submit and wait for result
     hpc_batch.py submit-and-wait --prompt "..." [--type TYPE] [--poll 60] [--timeout 86400]
+
+    # Show tasks blocked by unmet dependencies
+    hpc_batch.py blocked [--json]
+
+    # Expire old pending tasks
+    hpc_batch.py expire [--older-than SECONDS]
+
+    # DAG dependency support:
+    #   hpc_batch.py submit --prompt "A"                           # task with no deps
+    #   hpc_batch.py submit --depends-on <A-id> --prompt "B"       # B runs after A
+    #   hpc_batch.py blocked                                       # show what's stuck
 """
 from __future__ import annotations
 
@@ -101,8 +112,123 @@ def init_db(db_path: str) -> sqlite3.Connection:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON tasks(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON tasks(created_at)")
+
+    # Task dependencies (DAG support)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS task_deps (
+            task_id TEXT NOT NULL,
+            depends_on TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            PRIMARY KEY (task_id, depends_on)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_deps(task_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_deps_dep ON task_deps(depends_on)")
+
     conn.commit()
     return conn
+
+
+def _detect_cycle(
+    task_id: str,
+    depends_on: list[str],
+    conn: sqlite3.Connection,
+) -> bool:
+    """BFS up the dep chain to detect if adding these deps creates a cycle.
+
+    For each dependency, follow its transitive dependency chain.
+    If we ever encounter task_id, adding this edge would create a cycle.
+
+    Returns True if a cycle is detected.
+    """
+    visited: set[str] = set()
+    queue: list[str] = list(depends_on)
+
+    while queue:
+        current = queue.pop(0)
+        if current == task_id:
+            return True  # Cycle: task_id is reachable from its own deps
+        if current in visited:
+            continue
+        visited.add(current)
+        rows = conn.execute(
+            "SELECT depends_on FROM task_deps WHERE task_id = ?",
+            (current,),
+        ).fetchall()
+        for row in rows:
+            queue.append(row[0])
+
+    return False
+
+
+def cascade_failure(task_id: str, db_path: str = "") -> int:
+    """Cascade failure of a task to all its pending dependents.
+
+    Preemption guard: only cascades if the failed task has usage > 0
+    (real failure, not preemption where 0 tokens were consumed).
+
+    Args:
+        task_id: The ID of the failed task.
+        db_path: Path to SQLite DB.
+
+    Returns:
+        Number of tasks cascaded.
+    """
+    db = db_path or str(DEFAULT_DB)
+    conn = init_db(db)
+
+    # ── Preemption guard ─────────────────────────────────────────────
+    # Only cascade if the task had usage tokens > 0 (real work was done).
+    # If 0 or no result (preempted/killed), skip cascade — the task can be retried.
+    row = conn.execute(
+        "SELECT result FROM tasks WHERE id = ? AND status = 'failed'",
+        (task_id,),
+    ).fetchone()
+
+    should_cascade = False
+    if row and row[0]:
+        try:
+            result = json.loads(row[0])
+            usage = result.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
+            if total_tokens > 0:
+                should_cascade = True
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            should_cascade = False
+
+    if not should_cascade:
+        conn.close()
+        return 0
+
+    # ── Find and fail dependents ─────────────────────────────────────
+    dependents = conn.execute(
+        "SELECT task_id FROM task_deps WHERE depends_on = ?",
+        (task_id,),
+    ).fetchall()
+
+    now = time.time()
+    count = 0
+    for dep_row in dependents:
+        dep_id = dep_row[0]
+
+        # Only cascade pending or running tasks
+        status_row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (dep_id,)
+        ).fetchone()
+        if status_row and status_row[0] in ("pending", "running"):
+            conn.execute(
+                """
+                UPDATE tasks SET status = 'failed', error = ?,
+                    completed_at = ?
+                WHERE id = ?
+                """,
+                (f"Cascade failure: dependency {task_id} failed", now, dep_id),
+            )
+            count += 1
+
+    conn.commit()
+    conn.close()
+    return count
 
 
 def submit_task(
@@ -112,13 +238,48 @@ def submit_task(
     agent_id: str = "hpc-batch",
     metadata: dict | None = None,
     task_id: str = "",
+    depends_on: list[str] | None = None,
 ) -> str:
-    """Add a task to the local SQLite queue."""
+    """Add a task to the local SQLite queue.
+
+    Args:
+        prompt: Task prompt text.
+        db_path: Path to SQLite DB (default: tasks.db in HPC_AGENT_DIR).
+        model: Model name for inference.
+        agent_id: Identifier for the submitting agent.
+        metadata: Arbitrary key-value metadata.
+        task_id: Explicit task ID (auto-generated if empty).
+        depends_on: List of task IDs this task depends on.
+                     All must exist in the DB at submission time.
+
+    Returns:
+        The task ID.
+    """
     db = db_path or str(DEFAULT_DB)
     task_id = task_id or str(uuid.uuid4())
     created_at = time.time()
+    depends_on = depends_on or []
 
     conn = init_db(db)
+
+    # Validate dependencies exist
+    for dep_id in depends_on:
+        row = conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (dep_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise ValueError(
+                f"Dependency task '{dep_id}' not found in database"
+            )
+
+    # Cycle detection: BFS from each dep, check if task_id is reachable
+    if _detect_cycle(task_id, depends_on, conn):
+        conn.close()
+        raise ValueError(
+            f"Circular dependency detected: task would depend on itself"
+        )
+
     conn.execute("""
         INSERT INTO tasks (
             id, agent_id, messages, tools, model, api_config,
@@ -135,6 +296,14 @@ def submit_task(
         created_at,
         "pending",
     ))
+
+    # Insert dependency edges
+    for dep_id in depends_on:
+        conn.execute("""
+            INSERT OR IGNORE INTO task_deps (task_id, depends_on, created_at)
+            VALUES (?, ?, ?)
+        """, (task_id, dep_id, created_at))
+
     conn.commit()
     conn.close()
     return task_id
@@ -449,11 +618,14 @@ def cmd_submit(args):
         for item in lines:
             meta = dict(item.get("metadata") or {})
             meta["type"] = args.type
+            if args.cycle is not None:
+                meta["cycle"] = args.cycle
             tid = submit_task(
                 prompt=item.get("prompt", item.get("messages", "")),
                 db_path=args.db,
                 model=item.get("model", args.model),
                 metadata=meta,
+                depends_on=args.depends_on,
             )
             ids.append(tid)
 
@@ -461,11 +633,15 @@ def cmd_submit(args):
         return ids
 
     else:
+        meta = {"type": args.type}
+        if args.cycle is not None:
+            meta["cycle"] = args.cycle
         tid = submit_task(
             prompt=args.prompt,
             db_path=args.db,
             model=args.model,
-            metadata={"type": args.type},
+            metadata=meta,
+            depends_on=args.depends_on,
         )
         print(tid)
         return [tid]
@@ -638,6 +814,121 @@ def cmd_submit_and_wait(args):
     sys.exit(1)
 
 
+def get_blocked_tasks(db_path: str = "") -> list[dict]:
+    """Find pending tasks whose dependencies are not all completed.
+
+    Returns a list of dicts with task info and the blocking task IDs.
+    """
+    db = db_path or str(DEFAULT_DB)
+    if not os.path.exists(db):
+        return []
+
+    conn = init_db(db)
+    conn.row_factory = sqlite3.Row
+
+    # Find pending tasks with unmet deps
+    rows = conn.execute("""
+        SELECT t.id, t.messages, t.model, t.created_at,
+               td.depends_on AS blocker_id,
+               bt.status AS blocker_status
+        FROM tasks t
+        JOIN task_deps td ON td.task_id = t.id
+        LEFT JOIN tasks bt ON bt.id = td.depends_on
+        WHERE t.status = 'pending'
+          AND (bt.status IS NULL OR bt.status != 'completed')
+        ORDER BY t.created_at ASC
+    """).fetchall()
+
+    # Group by task
+    blocked_map: dict[str, dict] = {}
+    for r in rows:
+        tid = r["id"]
+        if tid not in blocked_map:
+            messages = json.loads(r["messages"]) if r["messages"] else []
+            preview = messages[0]["content"][:80] if messages else ""
+            blocked_map[tid] = {
+                "id": tid,
+                "prompt_preview": preview,
+                "model": r["model"],
+                "created_at": datetime.fromtimestamp(r["created_at"], tz=timezone.utc)
+                    .isoformat() if r["created_at"] else "",
+                "blocked_by": [],
+            }
+        blocker = {
+            "id": r["blocker_id"],
+            "status": r["blocker_status"] or "unknown",
+        }
+        if blocker not in blocked_map[tid]["blocked_by"]:
+            blocked_map[tid]["blocked_by"].append(blocker)
+
+    conn.close()
+    return list(blocked_map.values())
+
+
+def expire_old_tasks(db_path: str = "", older_than: int = 86400) -> int:
+    """Mark pending tasks older than `older_than` seconds as failed.
+
+    Args:
+        db_path: Path to SQLite DB.
+        older_than: Age threshold in seconds (default 24h).
+
+    Returns:
+        Number of tasks expired.
+    """
+    db = db_path or str(DEFAULT_DB)
+    if not os.path.exists(db):
+        return 0
+
+    conn = init_db(db)
+    cutoff = time.time() - older_than
+    error_msg = f"Expired (older than {older_than}s)"
+
+    conn.execute(
+        """
+        UPDATE tasks SET status = 'failed', error = ?,
+            completed_at = ?
+        WHERE status = 'pending' AND created_at < ?
+        """,
+        (error_msg, time.time(), cutoff),
+    )
+    count = conn.total_changes
+    conn.commit()
+    conn.close()
+
+    if count:
+        print(f"[expire] Expired {count} tasks older than {older_than}s")
+    return count
+
+
+def cmd_expire(args):
+    """hpc_batch.py expire --older-than SECONDS"""
+    count = expire_old_tasks(args.db, older_than=args.older_than)
+    print(count)
+
+
+def cmd_blocked(args):
+    """hpc_batch.py blocked [--json]"""
+    blocked = get_blocked_tasks(args.db)
+
+    if args.json:
+        print(json.dumps(blocked, indent=2))
+        return blocked
+
+    if not blocked:
+        print("No blocked tasks")
+        return blocked
+
+    print(f"{'ID':<40} {'PROMPT':<50} {'BLOCKED BY':<30}")
+    print("-" * 120)
+    for t in blocked:
+        blockers = ", ".join(
+            f"{b['id'][:12]}...({b['status']})"
+            for b in t["blocked_by"]
+        )
+        print(f"{t['id']:<40} {t['prompt_preview']:<50} {blockers:<30}")
+    return blocked
+
+
 def cmd_count(args):
     """hpc_batch.py count [--status pending] [--type TYPE]"""
     db = args.db or str(DEFAULT_DB)
@@ -667,6 +958,11 @@ def main():
     p_submit.add_argument("--prompt-file", help="File containing prompt text (avoids argv limits)")
     p_submit.add_argument("--file", help="File with prompts (one per line or JSONL)")
     p_submit.add_argument("--type", default="generic", help="Task type tag for filtering")
+    p_submit.add_argument("--cycle", type=int, default=None,
+                          help="FA pipeline cycle number (stored in metadata)")
+    p_submit.add_argument("--depends-on", action="append", default=[],
+                          dest="depends_on",
+                          help="Task ID this submission depends on (repeatable)")
     p_submit.set_defaults(func=cmd_submit)
 
 
@@ -707,6 +1003,18 @@ def main():
     p_sw.add_argument("--poll", type=int, default=60)
     p_sw.add_argument("--timeout", type=int, default=86400)
     p_sw.set_defaults(func=cmd_submit_and_wait)
+
+    # blocked
+    p_blocked = sub.add_parser("blocked", help="Show tasks blocked by unmet dependencies")
+    p_blocked.add_argument("--json", action="store_true", help="JSON output")
+    p_blocked.set_defaults(func=cmd_blocked)
+
+    # expire
+    p_expire = sub.add_parser("expire", help="Expire old pending tasks")
+    p_expire.add_argument("--older-than", type=int, default=86400,
+                          dest="older_than",
+                          help="Age threshold in seconds (default: 86400 = 24h)")
+    p_expire.set_defaults(func=cmd_expire)
 
     # count
     p_count = sub.add_parser("count", help="Count tasks by status and type")
