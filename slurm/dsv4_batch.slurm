@@ -174,7 +174,7 @@ python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
     --tensor-parallel-size "$TP" \
-    --gpu-memory-utilization 0.88 \
+    --gpu-memory-utilization 0.98 \
     --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --kv-cache-dtype fp8 \
