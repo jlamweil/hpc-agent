@@ -104,7 +104,16 @@ else
     echo "  WARN: conda.sh not found at $CONDA_SH, using default python"
 fi
 
+# Critical env vars MUST be set before any vLLM import (including the version check)
+export NCCL_NET=Socket
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_HOME="$HOME/hf_cache"
+echo "[$(date -Iseconds)] NCCL_NET=Socket | HF_HOME=$HF_HOME"
+mkdir -p "$HF_HOME"
+
 # Check vLLM (must be pre-installed — compute nodes have no internet)
+echo "[$(date -Iseconds)] Checking vLLM..."
 if python -c "import vllm; print(f'vLLM {vllm.__version__}', end='')" 2>/dev/null; then
     echo "[$(date -Iseconds)] vLLM: $(python -c 'import vllm; print(vllm.__version__)')"
 else
@@ -114,11 +123,6 @@ else
     echo "  pip install --no-deps ~/vllm_wheels/vllm-0.22.0-cp38-abi3-manylinux_2_28_x86_64.whl"
     exit 1
 fi
-
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-export NCCL_NET=Socket
-export HF_HOME="$HOME/hf_cache"
 echo "[$(date -Iseconds)] HF_HOME=$HF_HOME (BeeGFS — model loads via network)"
 mkdir -p "$HF_HOME"
 
