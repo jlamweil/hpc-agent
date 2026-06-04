@@ -5,7 +5,7 @@
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:4
-#SBATCH --constraint='gpuh100&gpu80g&nvlink'
+#SBATCH --constraint='gpuh100'
 #SBATCH --mem=128G
 #SBATCH --partition=pri2021gpu
 #SBATCH --account=qosmivgpu

@@ -5,6 +5,7 @@
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:2
+#SBATCH --constraint='gpuh100'
 #SBATCH --mem=64G
 #SBATCH --partition=pri2021gpu
 #SBATCH --account=qosmivgpu
@@ -172,7 +173,7 @@ python -m vllm.entrypoints.openai.api_server \
     --gpu-memory-utilization 0.88 \
     --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
-    --kv-cache-dtype "$KVCACHE_DTYPE" \
+    --kv-cache-dtype auto \
     --trust-remote-code \
     --tokenizer-mode deepseek_v4 \
     --tool-call-parser deepseek_v4 \
