@@ -177,7 +177,7 @@ python -m vllm.entrypoints.openai.api_server \
     --gpu-memory-utilization 0.88 \
     --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
-    --kv-cache-dtype auto \
+    --kv-cache-dtype fp8 \
     --trust-remote-code \
     --tokenizer-mode deepseek_v4 \
     --tool-call-parser deepseek_v4 \
