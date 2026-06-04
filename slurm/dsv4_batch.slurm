@@ -4,8 +4,8 @@
 #SBATCH --error=dsv4-batch-%j.err
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
-#SBATCH --mem=128G
+#SBATCH --gres=gpu:2
+#SBATCH --mem=64G
 #SBATCH --partition=pri2021gpu
 #SBATCH --account=qosmivgpu
 #SBATCH --qos=preemptqos
@@ -145,13 +145,18 @@ if [ "$PENDING_COUNT" -eq 0 ] && [ "$BATCH_SIZE" -ne 0 ]; then
     exit 0
 fi
 
+# ── Detect GPUs ──────────────────────────────────────────────────────────────
+TP=$(python3 -c "import torch; print(torch.cuda.device_count() if torch.cuda.is_available() else 2)" 2>/dev/null || echo "2")
+echo "[$(date -Iseconds)] Available GPUs: $TP"
+
 # ── Start vLLM ──────────────────────────────────────────────────────────────
 echo "[$(date -Iseconds)] Starting vLLM server..."
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
     --tensor-parallel-size "$TP" \
-    --gpu-memory-utilization "$GPU_MEM_UTIL" \
+    --gpu-memory-utilization 0.88 \
+    --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --kv-cache-dtype "$KVCACHE_DTYPE" \
     --trust-remote-code \
