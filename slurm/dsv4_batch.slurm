@@ -4,7 +4,7 @@
 #SBATCH --error=dsv4-batch-%j.err
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:4
 #SBATCH --constraint='gpuh100'
 #SBATCH --mem=64G
 #SBATCH --partition=pri2021gpu
@@ -45,7 +45,7 @@ BATCH_SIZE="${BATCH_SIZE:-10}"
 MODEL="${MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
 TP="${TP:-4}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 KVCACHE_DTYPE="${KVCACHE_DTYPE:-fp8}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 RESULTS_DIR="${RESULTS_DIR:-$HERO_DIR/results-$SLURM_JOB_ID}"
