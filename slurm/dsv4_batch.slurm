@@ -105,7 +105,9 @@ else
 fi
 
 # Critical env vars MUST be set before any vLLM import (including the version check)
-# NCCL_NET left unset — system default (IB) works on H100 nodes; Socket caused TCPStore timeouts
+# NCCL_NET left unset — system default works on H100 nodes
+# NCCL_SOCKET_IFNAME excludes loopback to avoid 'bind failed: Cannot assign requested address'
+export NCCL_SOCKET_IFNAME=^lo,docker
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HOME="$HOME/hf_cache"
