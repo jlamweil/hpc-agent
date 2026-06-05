@@ -4,7 +4,7 @@
 #SBATCH --error=dsv4-batch-%j.err
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:2
 #SBATCH --constraint='gpuh100'
 #SBATCH --mem=64G
 #SBATCH --partition=pri2021gpu
@@ -26,6 +26,9 @@
 #   MAX_MODEL_LEN — vLLM max-model-len (default: 4096)
 #   KVCACHE_DTYPE — KV cache dtype (default: fp8)
 #   VLLM_PORT     — vLLM API port (default: 8000)
+#   IDLE_TIMEOUT  — idle seconds before exit when queue empty (default: 600 = 10 min)
+#   POLL_INTERVAL — seconds between idle queue checks (default: 60)
+#   FETCH_DIR     — fetch proxy request directory (default: ~/hpc-agent/fetch-requests)
 #
 # Usage:
 #   rsync tasks.db hpc-login.u-strasbg.fr:~/hpc-agent/
@@ -43,11 +46,16 @@ SCRATCH="/tmp/scratch_${SLURM_JOB_ID}"
 DB_PATH="${DB_PATH:-$HERO_DIR/tasks.db}"
 BATCH_SIZE="${BATCH_SIZE:-10}"
 MODEL="${MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
-TP="${TP:-4}"
+TP="${TP:-2}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
 KVCACHE_DTYPE="${KVCACHE_DTYPE:-fp8}"
 VLLM_PORT="${VLLM_PORT:-8000}"
+IDLE_TIMEOUT="${IDLE_TIMEOUT:-600}"
+POLL_INTERVAL="${POLL_INTERVAL:-60}"
+FETCH_DIR="${FETCH_DIR:-$HERO_DIR/fetch-requests}"
+FETCH_RESPONSE_DIR="${FETCH_RESPONSE_DIR:-$HERO_DIR/fetch-responses}"
+PROXY_HEARTBEAT="${PROXY_HEARTBEAT:-$HERO_DIR/proxy-heartbeat.json}"
 RESULTS_DIR="${RESULTS_DIR:-$HERO_DIR/results-$SLURM_JOB_ID}"
 
 mkdir -p "$LOG_DIR" "$RESULTS_DIR" "$SCRATCH"
@@ -57,6 +65,43 @@ cd "$SCRATCH"
 cleanup() {
     local EXIT_CODE=$?
     echo "[$(date -Iseconds)] Cleaning up..."
+
+    # ── Preemption guard: reset running fill tasks ─────────────────────
+    # If the job is being preempted (exit code from signal), running fill
+    # tasks should be retried rather than left as failed.
+    if [ -f "$DB_PATH" ]; then
+        python3 -u - "$DB_PATH" << 'PYEOF' 2>/dev/null || true
+import json, sqlite3, time, os
+db = os.sys.argv[1]
+conn = sqlite3.connect(db)
+# Reset fill tasks that were running (type='fill' in metadata)
+rows = conn.execute("""
+    SELECT id, COALESCE(attempt_count, 0) as attempt FROM tasks
+    WHERE status = 'running'
+    AND json_extract(metadata, '$.type') = 'fill'
+""").fetchall()
+for row in rows:
+    tid, attempt = row
+    if attempt < 5:
+        conn.execute("""
+            UPDATE tasks SET status = 'pending', worker_id = NULL,
+            claimed_at = NULL, retry_at = NULL,
+            attempt_count = ?, last_error = 'Preempted by SLURM'
+            WHERE id = ?
+        """, (attempt + 1, tid))
+        print(f"  Preempted fill task {tid[:12]}... reset to pending (attempt {attempt+1}/5)")
+    else:
+        conn.execute("""
+            UPDATE tasks SET status = 'failed', completed_at = ?,
+            last_error = 'Fill task preempted 5 times, giving up'
+            WHERE id = ?
+        """, (time.time(), tid))
+        print(f"  Fill task {tid[:12]}... failed after 5 preemptions")
+conn.commit()
+conn.close()
+PYEOF
+    fi
+
     # Kill vLLM if running
     [ -n "${VLLM_PID:-}" ] && kill "$VLLM_PID" 2>/dev/null || true
     # Copy results to persistent storage
@@ -216,12 +261,13 @@ curl -s --max-time 10 "http://127.0.0.1:${VLLM_PORT}/v1/models" | python3 -m jso
 echo "[$(date -Iseconds)] Starting task processing..."
 TIMING_ALL_START=$(date +%s)
 
-# Process in batches
+# Process in batches with idle-poll
 TOTAL_DONE=0
 TOTAL_FAILED=0
 BATCH_INDEX=0
+IDLE_SECONDS=0
 
-while true; do
+while [ $IDLE_SECONDS -lt $IDLE_TIMEOUT ]; do
     # Calculate batch limit: 0 means unlimited
     if [ "$BATCH_SIZE" -eq 0 ]; then
         THIS_BATCH=100
@@ -305,11 +351,77 @@ print(f"  Claimed {len(rows)} tasks")
 
 api_base = f"http://127.0.0.1:{vllm_port}"
 
+# ── Fetch proxy tool ─────────────────────────────────────────────────
+FETCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": "Fetch a URL or search the web. Use this to look up papers, code, or research data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "reason": {"type": "string", "description": "Why this fetch is needed"}
+            },
+            "required": ["url"]
+        }
+    }
+}
+
+fetch_dir = os.environ.get("FETCH_DIR", "")
+fetch_response_dir = os.environ.get("FETCH_RESPONSE_DIR", "")
+proxy_heartbeat = os.environ.get("PROXY_HEARTBEAT", "")
+
+def _proxy_available() -> bool:
+    """Check if the fetch proxy heartbeat is recent."""
+    if not proxy_heartbeat or not os.path.exists(proxy_heartbeat):
+        return False
+    try:
+        hb = json.load(open(proxy_heartbeat))
+        return (time.time() - hb.get("timestamp", 0)) < 60
+    except Exception:
+        return False
+
+def _handle_fetch(task_id: str, func_args: dict) -> dict:
+    """Write fetch request to BeeGFS, poll for response."""
+    if not fetch_dir or not _proxy_available():
+        print(f"    Fetch unavailable for {task_id[:12]} (no proxy)", end=" ")
+        return {"error": "proxy not available", "url": func_args.get("url", "")}
+
+    os.makedirs(fetch_dir, exist_ok=True)
+    os.makedirs(fetch_response_dir, exist_ok=True)
+
+    request = {
+        "id": task_id,
+        "type": "http",
+        "url": func_args.get("url", ""),
+        "method": "GET",
+        "timeout": 30,
+        "created_at": time.time(),
+    }
+
+    req_path = os.path.join(fetch_dir, f"{task_id}.json")
+    with open(req_path, "w") as f:
+        json.dump(request, f)
+
+    # Poll for response with exponential backoff (max ~2 min)
+    for attempt in range(8):
+        resp_path = os.path.join(fetch_response_dir, f"{task_id}.json")
+        if os.path.exists(resp_path):
+            with open(resp_path) as f:
+                resp = json.load(f)
+            os.remove(resp_path)
+            return resp
+        time.sleep(4 * (2 ** attempt))
+
+    return {"error": "fetch timeout", "url": func_args.get("url", "")}
+
 def call_vllm(messages, model_name):
-    """Call vLLM API with retries."""
+    """Call vLLM API with retries, including fetch_url tool definition."""
     body = json.dumps({
         "model": model_name,
         "messages": messages,
+        "tools": [FETCH_TOOL],
         "temperature": 0.7,
         "max_tokens": 4096,
     }).encode()
@@ -343,12 +455,49 @@ for row in rows:
 
     try:
         result = call_vllm(messages, model_name)
+        response_message = result['choices'][0]['message']
+
+        # ── Handle tool calls (fetch proxy) ────────────────────────
+        max_tool_rounds = 5
+        tool_round = 0
+        while response_message.get('tool_calls') and tool_round < max_tool_rounds:
+            tool_round += 1
+            for tc in response_message['tool_calls']:
+                fn = tc.get('function', {})
+                fn_name = fn.get('name', '')
+                fn_args_str = fn.get('arguments', '{}')
+
+                if fn_name == 'fetch_url':
+                    try:
+                        fn_args = json.loads(fn_args_str)
+                    except json.JSONDecodeError:
+                        fn_args = {}
+                    print(f"fetch", end=" ")
+                    fetch_response = _handle_fetch(task_id, fn_args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc['id'],
+                        "content": json.dumps(fetch_response)
+                    })
+                else:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc['id'],
+                        "content": json.dumps({"error": f"Unknown tool: {fn_name}"})
+                    })
+
+            # Re-call vLLM with tool responses
+            result = call_vllm(messages, model_name)
+            response_message = result['choices'][0]['message']
+
+        if tool_round >= max_tool_rounds:
+            print(f"tool_limit", end=" ")
 
         result_data = json.dumps({
-            'content': result['choices'][0]['message'].get('content', ''),
-            'tool_calls': result['choices'][0]['message'].get('tool_calls'),
-            'reasoning': result['choices'][0]['message'].get('reasoning'),
-            'finish_reason': result['choices'][0]['message'].get('finish_reason'),
+            'content': response_message.get('content', ''),
+            'tool_calls': response_message.get('tool_calls'),
+            'reasoning': response_message.get('reasoning'),
+            'finish_reason': response_message.get('finish_reason'),
             'usage': result.get('usage'),
         })
 
@@ -392,11 +541,18 @@ TOTAL_FAILED=$((TOTAL_FAILED + BATCH_FAIL))
 TIMING_BATCH_ELAPSED=$(( $(date +%s) - TIMING_BATCH_START ))
 echo "[$(date -Iseconds)] Batch $BATCH_INDEX done: +${BATCH_DONE} ok, +${BATCH_FAIL} fail, ${TIMING_BATCH_ELAPSED}s"
 
-# Check if we should continue
+# Idle-poll: if no tasks found, sleep and check again
 if [ "$BATCH_RC" -eq 0 ] && [ "$BATCH_DONE" -eq 0 ] && [ "$BATCH_FAIL" -eq 0 ]; then
-    echo "[$(date -Iseconds)] No more pending tasks — done."
-    break
+    IDLE_SECONDS=$((IDLE_SECONDS + POLL_INTERVAL))
+    if [ $IDLE_SECONDS -ge $IDLE_TIMEOUT ]; then
+        echo "[$(date -Iseconds)] Idle timeout (${IDLE_TIMEOUT}s). Exiting."
+        break
+    fi
+    echo "[$(date -Iseconds)] No tasks. Idle ${IDLE_SECONDS}s/${IDLE_TIMEOUT}s. Polling in ${POLL_INTERVAL}s..."
+    sleep $POLL_INTERVAL
+    continue
 fi
+IDLE_SECONDS=0  # reset idle on any activity
 
 # If batch size = 0 (unlimited), process all in one shot
 if [ "$BATCH_SIZE" -eq 0 ]; then
