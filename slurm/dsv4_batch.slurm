@@ -151,6 +151,8 @@ fi
 # DeepGEMM JIT compiler needs nvcc in PATH
 export PATH="/usr/local/cuda/13.0/bin:$PATH"
 export CUDA_HOME="/usr/local/cuda/13.0"
+# Reduce CUDA memory fragmentation (suggested by PyTorch OOM error)
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 # NCCL_SOCKET_IFNAME: excludes loopback to avoid 'bind failed: Cannot assign requested address'
 export NCCL_SOCKET_IFNAME='^lo,docker'
 export HF_HUB_OFFLINE=1
