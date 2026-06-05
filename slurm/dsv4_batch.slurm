@@ -148,6 +148,9 @@ else
 fi
 
 # Critical env vars MUST be set before any vLLM import (including the version check)
+# DeepGEMM JIT compiler needs nvcc in PATH
+export PATH="/usr/local/cuda/13.0/bin:$PATH"
+export CUDA_HOME="/usr/local/cuda/13.0"
 # NCCL_SOCKET_IFNAME: excludes loopback to avoid 'bind failed: Cannot assign requested address'
 export NCCL_SOCKET_IFNAME='^lo,docker'
 export HF_HUB_OFFLINE=1
