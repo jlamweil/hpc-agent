@@ -164,8 +164,15 @@ echo "[$(date -Iseconds)] Model path: $MODEL_PATH"
 ls "$MODEL_PATH"/config.json 2>/dev/null && echo "  Config: OK" || echo "  Config: MISSING"
 
 # ── Detect GPUs ──────────────────────────────────────────────────────────────
-TP=$(python3 -c "import torch; print(torch.cuda.device_count() if torch.cuda.is_available() else 2)" 2>/dev/null || echo "2")
-echo "[$(date -Iseconds)] Available GPUs: $TP"
+# TP must divide 64 (attention heads). Valid: 1, 2, 4, 8.
+# Use env var (default 4). Auto-detect only as fallback.
+if [ "$TP" = "auto" ] || [ -z "$TP" ]; then
+    DETECTED=$(python3 -c "import torch; c=torch.cuda.device_count() if torch.cuda.is_available() else 2; print(c if 64%c==0 else 2)" 2>/dev/null || echo "2")
+    TP="$DETECTED"
+    echo "[$(date -Iseconds)] Auto-detected TP=$TP (must divide 64 heads)"
+else
+    echo "[$(date -Iseconds)] Using configured TP=$TP"
+fi
 
 # ── Start vLLM ──────────────────────────────────────────────────────────────
 echo "[$(date -Iseconds)] Starting vLLM server..."
