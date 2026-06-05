@@ -11,6 +11,8 @@ import time
 import urllib.request
 import urllib.error
 
+from infra.routing import TaskRouter
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -19,6 +21,8 @@ def main():
     parser.add_argument("--ollama-url", default="http://localhost:11434")
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--poll", action="store_true", help="Keep polling for new tasks")
+    parser.add_argument("--router", choices=["local", "hpc"], default=None,
+                        help="Only process tasks routed to this target")
     args = parser.parse_args()
 
     db_path = args.db
@@ -27,7 +31,7 @@ def main():
 
     api_base = args.ollama_url.rstrip("/")
 
-    print(f"Local processor: {args.model} | DB: {db_path} | API: {api_base}")
+    print(f"Local processor: {args.model} | DB: {db_path} | API: {api_base} | Router: {args.router or 'all'}")
 
     # Ensure Ollama is running
     try:
@@ -58,7 +62,14 @@ def main():
 
         # Dequeue pending tasks (respecting DAG dependencies)
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute("""
+        
+        router_filter = ""
+        if args.router == "local":
+            router_filter = "AND json_extract(metadata, '$.route') = 'local' "
+        elif args.router == "hpc":
+            router_filter = "AND (json_extract(metadata, '$.route') IS NULL OR json_extract(metadata, '$.route') = 'hpc') "
+        
+        rows = conn.execute(f"""
             SELECT id, messages, model, metadata FROM tasks
             WHERE status = 'pending'
               AND NOT EXISTS (
@@ -68,6 +79,7 @@ def main():
                         SELECT id FROM tasks WHERE status = 'completed'
                     )
               )
+              {router_filter}
             ORDER BY created_at ASC
             LIMIT ?
         """, (args.limit,)).fetchall()

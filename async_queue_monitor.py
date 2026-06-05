@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 import asyncio
+import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from infra.sqlite_queue import SQLiteTaskQueue
+from infra.routing import TaskRouter
+from collectors.base import CollectorResult
+from collectors.config import get_collector_config
 
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "5"))
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
@@ -25,7 +30,8 @@ class AsyncQueueMonitor:
                  hpc_user: str = HPC_USER, hpc_host: str = HPC_HOST,
                  hpc_dir: str = HPC_DIR, dry_run: bool = False,
                  worker_id: str = None, high_threshold: int = HIGH_THRESHOLD,
-                 low_threshold: int = LOW_THRESHOLD, max_jobs: int = MAX_CONCURRENT_JOBS):
+                 low_threshold: int = LOW_THRESHOLD, max_jobs: int = MAX_CONCURRENT_JOBS,
+                 router: str = None, fill_tasks: bool = True):
         self.queue = SQLiteTaskQueue(db_path=db_path)
         self.batch_size = batch_size
         self.hpc_user = hpc_user
@@ -38,6 +44,121 @@ class AsyncQueueMonitor:
         self.low_threshold = low_threshold
         self.max_jobs = max_jobs
         self.active_jobs = 0
+        self.router = router  # 'local', 'hpc', or None
+        self.fill_tasks_enabled = fill_tasks
+        self._fill_generated = False  # only generate once per monitor run
+
+    def _generate_fill_tasks(self):
+        """Generate low-priority fill tasks from config.yaml generators.
+        
+        Called once when the first SLURM job is submitted.
+        Fill tasks sit at priority -1 and are only processed when nothing else is pending.
+        """
+        if not self.fill_tasks_enabled or self._fill_generated:
+            return 0
+        
+        import yaml
+        from pathlib import Path
+        
+        # Load config
+        config_path = Path(__file__).resolve().parent / "config.yaml"
+        if not config_path.exists():
+            return 0
+        
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+        
+        fill_config = config.get("fill_tasks", {})
+        if not fill_config.get("enabled", False):
+            return 0
+        
+        generators = fill_config.get("generators", [])
+        max_per_job = fill_config.get("max_per_job", 50)
+        total_generated = 0
+        
+        # For each generator, run the collector and submit fill tasks
+        from hpc_batch import submit_task
+        
+        for gen in generators:
+            if total_generated >= max_per_job:
+                break
+            
+            collector_name = gen.get("collector", "")
+            if not collector_name:
+                # Echo generator: re-run failed tasks at low priority
+                if gen.get("echo", False):
+                    re_priority = gen.get("priority", -2)
+                    conn = self.queue._get_conn()
+                    rows = conn.execute(
+                        "SELECT id FROM tasks WHERE status = 'failed' AND COALESCE(attempt_count, 0) < 3"
+                    ).fetchall()
+                    for row in rows:
+                        if total_generated >= max_per_job:
+                            break
+                        conn.execute(
+                            "UPDATE tasks SET status = 'pending', attempt_count = COALESCE(attempt_count, 0) + 1, "
+                            "priority = ?, last_error = NULL, completed_at = NULL WHERE id = ?",
+                            (re_priority, row[0]),
+                        )
+                        total_generated += 1
+                    conn.commit()
+                    conn.close()
+                continue
+            
+            # Run collector
+            try:
+                import collectors
+                collector_cls = collectors.get_collector(collector_name)
+                collector = collector_cls()
+                params = gen.get("params", {})
+                results = collector.collect(params)
+            except Exception as e:
+                print(f"  [fill] Collector {collector_name} error: {e}")
+                continue
+            
+            if not results:
+                continue
+            
+            # Submit each result as a fill task
+            gen_priority = gen.get("priority", -1)
+            gen_tasks_config = gen.get("tasks", [{"type": "generic"}])
+            
+            for r in results:
+                if total_generated >= max_per_job:
+                    break
+                for task_def in gen_tasks_config:
+                    if total_generated >= max_per_job:
+                        break
+                    task_type = task_def.get("type", "generic")
+                    meta = {
+                        "type": task_type,
+                        "source": collector_name,
+                        "source_id": r.source_id,
+                        "source_url": r.url,
+                        "title": r.title,
+                        "tags": task_def.get("tags", []) + ["fill"],
+                        "provenance": {
+                            "collector": f"{collector_name}/1.0",
+                            "collected_at": time.time(),
+                            "source": collector_name,
+                        },
+                    }
+                    tid = submit_task(
+                        prompt=f"Analyze: {r.title}\n\n{r.text}",
+                        db_path=self.queue.db_path,
+                        model=task_def.get("model", "deepseek-ai/DeepSeek-V4-Flash"),
+                        metadata=meta,
+                    )
+                    # Set priority to -1 so fill tasks never block real work
+                    conn = self.queue._get_conn()
+                    conn.execute("UPDATE tasks SET priority = ? WHERE id = ?", (gen_priority, tid))
+                    conn.commit()
+                    total_generated += 1
+        
+        self._fill_generated = True
+        if total_generated > 0:
+            print(f"[fill] Generated {total_generated} fill tasks at priority -1")
+        return total_generated
     
     async def get_pending_count(self) -> int:
         return self.queue.get_queue_size()
@@ -101,8 +222,46 @@ class AsyncQueueMonitor:
                     claimed = self.queue.claim_tasks(self.worker_id, self.batch_size)
                     
                     if claimed:
+                        # Filter by routing rule if --router is set
+                        if self.router:
+                            _router = TaskRouter()
+                            filtered = []
+                            for t in claimed:
+                                decision = _router.route({
+                                    "model": t["model"],
+                                    "messages": json.loads(t["messages"]),
+                                    "metadata": json.loads(t["metadata"]),
+                                })
+                                if decision == self.router:
+                                    filtered.append(t)
+                                else:
+                                    self.queue.release_task(t["id"])
+                            if len(filtered) < len(claimed):
+                                print(f"Routing filter ({self.router}): kept {len(filtered)}/{len(claimed)} tasks")
+                            claimed = filtered
+                        
+                        # Log routing distribution
+                        if claimed:
+                            _router = TaskRouter()
+                            local_count = 0
+                            for t in claimed:
+                                d = _router.route({
+                                    "model": t["model"],
+                                    "messages": json.loads(t["messages"]),
+                                    "metadata": json.loads(t["metadata"]),
+                                })
+                                if d == "local":
+                                    local_count += 1
+                            hpc_count = len(claimed) - local_count
+                            print(f"Routing distribution: {local_count} local, {hpc_count} hpc")
+                        
                         task_ids = [t['id'] for t in claimed]
                         print(f"Claimed {len(task_ids)} tasks: {[tid[:8] for tid in task_ids]}")
+
+                        # Generate fill tasks for this job (low-priority background work)
+                        fill_count = self._generate_fill_tasks()
+                        if fill_count > 0:
+                            print(f"[fill] Added {fill_count} fill tasks for idle GPU cycles")
                         
                         sync_ok = await self.sync_db_to_hpc()
                         
@@ -148,6 +307,12 @@ async def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--poll-interval", type=int, default=POLL_INTERVAL)
     parser.add_argument("--worker-id", default=None)
+    parser.add_argument("--router", choices=["local", "hpc"], default=None,
+                        help="Only claim tasks routed to this target (local|hpc)")
+    parser.add_argument("--fill", action="store_true", default=True,
+                        help="Generate fill tasks when submitting HPC jobs (default: on)")
+    parser.add_argument("--no-fill", action="store_false", dest="fill",
+                        help="Disable fill task generation")
     
     args = parser.parse_args()
     
@@ -158,7 +323,9 @@ async def main():
         hpc_host=args.hpc_host,
         hpc_dir=args.hpc_dir,
         dry_run=args.dry_run,
-        worker_id=args.worker_id
+        worker_id=args.worker_id,
+        router=args.router,
+        fill_tasks=args.fill,
     )
     monitor.poll_interval = args.poll_interval
     
