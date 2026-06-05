@@ -88,13 +88,8 @@ echo "================================"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader | while IFS= read -r line; do echo "  GPU: $line"; done
 
 # ── Environment ─────────────────────────────────────────────────────────────
-echo "[$(date -Iseconds)] Loading CUDA module..."
-if module load cuda 2>/dev/null; then
-    echo "  CUDA: $(nvcc --version 2>/dev/null | grep release)"
-else
-    echo "  WARN: CUDA module load failed — trying cuda/cuda-12.3"
-    module load cuda/cuda-12.3 2>/dev/null || echo "  WARN: No CUDA module available, vLLM may fail"
-fi
+echo "[$(date -Iseconds)] Using PyTorch bundled CUDA runtime (no module load needed)"
+echo "  Driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
 
 echo "[$(date -Iseconds)] Activating conda env..."
 CONDA_SH="/usr/local/python/Miniconda/etc/profile.d/conda.sh"
