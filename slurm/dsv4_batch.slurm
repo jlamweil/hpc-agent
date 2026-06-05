@@ -88,7 +88,10 @@ echo "================================"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader | while IFS= read -r line; do echo "  GPU: $line"; done
 
 # ── Environment ─────────────────────────────────────────────────────────────
-echo "[$(date -Iseconds)] Using PyTorch bundled CUDA runtime (no module load needed)"
+echo "[$(date -Iseconds)] Setting up CUDA libraries..."
+# PyTorch 2.6.0+cu124 provides libcudart.so.12 (driver 12.3 compatible)
+# vLLM _C extension needs libcudart.so.13 — available on shared BeeGFS
+export LD_LIBRARY_PATH="/usr/local/cuda/13.0/lib64:$LD_LIBRARY_PATH"
 echo "  Driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
 
 echo "[$(date -Iseconds)] Activating conda env..."
