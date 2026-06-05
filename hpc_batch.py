@@ -1913,6 +1913,13 @@ def main():
     p_blocked.set_defaults(func=cmd_blocked)
 
     # expire
+    # recover-stuck
+    p_rs = sub.add_parser("recover-stuck", help="Recover tasks stuck in running status (preempted jobs)")
+    p_rs.add_argument("--max-retries", type=int, default=3,
+                      dest="max_retries",
+                      help="Max retries before marking as failed (default: 3)")
+    p_rs.set_defaults(func=cmd_recover_stuck)
+
     p_expire = sub.add_parser("expire", help="Expire old pending tasks")
     p_expire.add_argument("--older-than", type=int, default=86400,
                           dest="older_than",
@@ -2022,3 +2029,73 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def cmd_recover_stuck(args):
+    """hpc_batch.py recover-stuck
+    
+    Find tasks stuck in 'running' status whose SLURM job is no longer active,
+    and reset them to 'pending' (or 'failed' if max retries exceeded).
+    """
+    db_path = args.db or str(DEFAULT_DB)
+    conn = sqlite3.connect(db_path)
+    
+    running = conn.execute(
+        "SELECT id, metadata, retry_count, slurm_job_id FROM tasks WHERE status = 'running'"
+    ).fetchall()
+    
+    max_retries = getattr(args, 'max_retries', 3)
+    now = datetime.now(timezone.utc).isoformat()
+    recovered = 0
+    failed = 0
+    skipped = 0
+    
+    for row in running:
+        task_id = row[0]
+        meta = json.loads(row[1]) if row[1] else {}
+        retry_count = row[2] or 0
+        slurm_job_id = row[3]
+        
+        # Check if SLURM job is still active
+        job_alive = False
+        if slurm_job_id:
+            try:
+                result = subprocess.run(
+                    ["ssh", "jlam@hpc-login.u-strasbg.fr", "squeue", "-j", str(slurm_job_id), "-h"],
+                    capture_output=True, text=True, timeout=15
+                )
+                job_alive = bool(result.stdout.strip())
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                # If we can't check, assume job might be alive (skip)
+                skipped += 1
+                continue
+        
+        if job_alive:
+            skipped += 1
+            continue
+        
+        # Job is dead — recover
+        new_retry = retry_count + 1
+        if new_retry > max_retries:
+            conn.execute(
+                "UPDATE tasks SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+                (f"failed after {new_retry} retries (preempted)", now, task_id)
+            )
+            logging.warning("Task %s failed after %d retries (preempted job %s)", task_id, new_retry, slurm_job_id)
+            failed += 1
+        else:
+            conn.execute(
+                "UPDATE tasks SET status = 'pending', retry_count = ?, started_at = NULL, updated_at = ? WHERE id = ?",
+                (new_retry, now, task_id)
+            )
+            logging.info("Recovered task %s from preempted job %s (retry %d)", task_id, slurm_job_id, new_retry)
+            recovered += 1
+    
+    conn.commit()
+    conn.close()
+    
+    print(json.dumps({
+        "recovered": recovered,
+        "failed_after_max_retries": failed,
+        "skipped": skipped,
+        "total_examined": len(running),
+    }, indent=2))
