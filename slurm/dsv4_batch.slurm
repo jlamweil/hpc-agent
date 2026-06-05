@@ -157,6 +157,7 @@ export VLLM_DISABLE_DEEPGEMM=1
 # CUDA memory management
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_CACHE_DISABLE=1
+export VLLM_USE_V1=0
 # NCCL_SOCKET_IFNAME: excludes loopback to avoid 'bind failed: Cannot assign requested address'
 export NCCL_SOCKET_IFNAME='^lo,docker'
 export HF_HUB_OFFLINE=1
