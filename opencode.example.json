@@ -1,0 +1,23 @@
+{
+  "providers": {
+    "hpc": {
+      "type": "hpc_agent",
+      "config": {
+        "db_path": "~/hpc-agent/tasks.db",
+        "model": "deepseek-ai/DeepSeek-V4-Flash",
+        "poll_interval": 30,
+        "timeout": 86400,
+        "fallback": {
+          "type": "anthropic",
+          "api_key_env": "ANTHROPIC_API_KEY",
+          "model": "claude-sonnet-4"
+        },
+        "warmth_policy": "prefer_hpc"
+      }
+    }
+  },
+  "subagents": {
+    "oracle": { "provider": "hpc" },
+    "librarian": { "provider": "hpc", "fallback": "anthropic" }
+  }
+}
