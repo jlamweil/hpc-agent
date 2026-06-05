@@ -1,0 +1,131 @@
+# promptfoo config for HPC Agent LLM evaluation
+# Tests: OpenCode Go API (cloud) + HPC Slurm queue + Claude baseline
+#
+# HPC tests submit tasks to the Slurm queue via hpc_provider.py and
+# block until results come back. Requires active HPC dispatch:
+#   python hpc_batch.py dispatch   (pushes queued tasks to Slurm)
+#
+# Run:
+#   promptfoo eval
+
+description: HPC Agent — cross-model LLM evaluation (Slurm + cloud)
+
+# Prompt template
+prompts:
+  - "{{input}}"
+
+# ── Providers under test ─────────────────────────────────────────────────
+
+providers:
+  # ═════════════════════════════════════════════════════════════════════
+  # HPC Slurm queue — submits to local DB, waits for HPC to process
+  # Uses hpc_provider.py which wraps hpc_batch.py submit-and-wait
+  # ═════════════════════════════════════════════════════════════════════
+  - id: exec:python /home/lam/Documents/GAIA/hpc-agent/hpc_provider.py
+    label: hpc-dsv4-flash
+    config:
+      model: deepseek-ai/DeepSeek-V4-Flash
+      timeout: 86400
+      poll_interval: 60
+
+  # ═════════════════════════════════════════════════════════════════════
+  # OpenCode Go API (cloud — DeepSeek V4 Flash via opencode.ai/zen/go)
+  # ═════════════════════════════════════════════════════════════════════
+  - id: openai:chat:deepseek-v4-flash
+    label: go-dsv4-flash
+    config:
+      apiHost: https://opencode.ai/zen/go/v1
+      apiKey: sk-BbEkNRJDYi7S6uYmKJsli8tDEplBqF1iIOY26nTUJnSCT6Ppjcyzq9kKowTpQBkx
+      temperature: 0.7
+      max_tokens: 4096
+
+  # ═════════════════════════════════════════════════════════════════════
+  # Baseline — direct Claude (needs ANTHROPIC_API_KEY exported)
+  # ═════════════════════════════════════════════════════════════════════
+  - id: anthropic:messages:claude-sonnet-4-20250514
+    label: claude-sonnet-baseline
+    config:
+      apiKeyEnvar: ANTHROPIC_API_KEY
+
+# ── Test cases ──────────────────────────────────────────────────────────
+
+tests:
+  - description: Biomedical text reasoning
+    vars:
+      input: |
+        A patient presents with a 5cm lung nodule on CT.
+        List 3 key differential diagnoses and what imaging features
+        would help narrow them down.
+    assert:
+      - type: llm-rubric
+        value: The response lists at least 2 plausible differentials and mentions specific imaging features that differentiate them
+
+  - description: Python code — Dice coefficient
+    vars:
+      input: |
+        Write a Python function to compute the Dice similarity coefficient
+        for two binary segmentation masks (numpy arrays).
+    assert:
+      - type: llm-rubric
+        value: The function uses numpy, handles edge cases (empty masks, dimension mismatch), and the Dice formula is correct
+
+  - description: French medical terminology
+    vars:
+      input: |
+        Translate these medical terms to French and explain each:
+        1. Ground-glass opacity
+        2. Lymphadenopathy
+        3. Adenocarcinoma in situ
+    assert:
+      - type: contains
+        value: verre
+      - type: contains
+        value: lymphadénopathie
+      - type: contains
+        value: adénocarcinome
+
+  - description: HPC Slurm scripting
+    vars:
+      input: |
+        Write Slurm #SBATCH directives for a job that needs:
+        - 4 H100 GPUs on partition 'pri2021gpu'
+        - 128GB memory
+        - 12 hour time limit
+        - QoS 'preemptqos'
+    assert:
+      - type: contains
+        value: '#SBATCH'
+      - type: contains
+        value: gres=gpu
+      - type: contains
+        value: pri2021gpu
+
+  - description: DeepSeek architecture
+    vars:
+      input: |
+        Explain the key architectural innovations in DeepSeek-V4-Flash
+        compared to previous generation models.
+    assert:
+      - type: llm-rubric
+        value: The response mentions specific architectural details about MLA, MoE routing, or KV cache optimizations
+
+  - description: Concise Slurm explanation
+    vars:
+      input: |
+        Explain what a SLURM job array is in 3 sentences or less.
+    assert:
+      - type: llm-rubric
+        value: The response is 3 sentences or fewer and correctly explains job arrays for parallel task submission
+
+# ── Environment ──────────────────────────────────────────────────────────
+
+env:
+  OPENAI_API_KEY: sk-BbEkNRJDYi7S6uYmKJsli8tDEplBqF1iIOY26nTUJnSCT6Ppjcyzq9kKowTpQBkx
+
+# ── Evaluation settings ─────────────────────────────────────────────────
+
+evaluateOptions:
+  maxConcurrency: 1
+  repeat: 1
+  maxFailures: 10
+  cache: true
