@@ -48,7 +48,7 @@ BATCH_SIZE="${BATCH_SIZE:-10}"
 MODEL="${MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
 TP="${TP:-2}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-1024}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
 KVCACHE_DTYPE="${KVCACHE_DTYPE:-fp8}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-600}"
@@ -153,11 +153,9 @@ export PATH="/usr/local/cuda/13.0/bin:$PATH"
 export CUDA_HOME="/usr/local/cuda/13.0"
 # DeepGEMM has H100 sm_90 memory addressing bug in vLLM 0.22.0
 # Disable to fall back to cuBLASLt kernels (slower but stable)
-export VLLM_DISABLE_DEEPGEMM=1
 # CUDA memory management
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_CACHE_DISABLE=1
-export VLLM_USE_V1=0
 # NCCL_SOCKET_IFNAME: excludes loopback to avoid 'bind failed: Cannot assign requested address'
 export NCCL_SOCKET_IFNAME='^lo,docker'
 export HF_HUB_OFFLINE=1
@@ -235,7 +233,7 @@ python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
     --tensor-parallel-size "$TP" \
-    --gpu-memory-utilization 0.98 \
+    --gpu-memory-utilization 0.99 \
     --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --kv-cache-dtype fp8 \
