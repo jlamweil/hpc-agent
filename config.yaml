@@ -61,6 +61,64 @@ hpc:
   time_limit: "06:00:00"
   mem: "128G"
 
+# ── Collectors ────────────────────────────────────────────────────────────
+collectors:
+  arxiv:
+    cache_ttl: 3600            # 1 hour cache for arXiv queries
+    max_results: 50
+    rate_limit: 3               # requests per second
+  github:
+    cache_ttl: 300              # repos change, cache only 5 min
+    rate_limit: 30
+    token_env: GITHUB_TOKEN     # optional, for higher API rate limits
+    max_file_size: 512000       # skip files larger than this
+    clone_depth: 1              # shallow clone
+  kaggle:
+    cache_ttl: 86400            # competitions change rarely
+    rate_limit: 5
+    token_env: KAGGLE_TOKEN
+  web:
+    cache_ttl: 0                # never cache web searches by default
+    rate_limit: 10
+    user_agent: "hpc-agent-research/1.0"
+    search_provider: duckduckgo
+    playwright: false
+
+# ── Fetch Proxy ──────────────────────────────────────────────────────────
+proxy:
+  poll_interval: 5              # seconds
+  request_timeout: 30           # default timeout for HTTP requests
+  max_response_size: 5242880    # 5 MB
+  allowlist: ["https://*"]      # URL patterns to allow
+  heartbeat_interval: 10        # seconds
+  stale_request_cleanup: 600    # 10 min cleanup
+  hpc_dir: "~/hpc-agent"
+
+# ── Task Routing ─────────────────────────────────────────────────────────
+routing:
+  default: "hpc"
+  local_models: ["qwen2.5:0.5b", "llama3.2:1b", "tinyllama:1.1b"]
+  local_types: ["summarize", "extract_keywords", "classify"]
+  hpc_types: ["paper_analysis", "code_review", "comparison", "repo_analysis"]
+  context_threshold: 2000       # tokens, below this = candidate for local
+
+# ── Fill Tasks (background work for idle GPU cycles) ────────────────────
+fill_tasks:
+  enabled: true
+  max_per_job: 50                # cap fill tasks per SLURM job
+  generators:
+    - collector: arxiv
+      priority: -1
+      params:
+        query: "cat:cs.AI OR cat:cs.CL OR cat:cs.LG"
+        max_results: 10
+      tasks:
+        - type: paper_analysis
+          tags: ["fill", "background"]
+    - echo: true                   # re-run failed tasks at low priority
+      priority: -2
+
+# ── Cleanup ──────────────────────────────────────────────────────────────
 cleanup:
   # Days to keep old tasks
   completed_days: 30
@@ -68,3 +126,5 @@ cleanup:
   
   # Days to keep HPC results
   hpc_results_days: 7
+  proxy_files_days: 7           # clean proxy request/response files
+  cache_entries_days: 30        # clean collector cache
