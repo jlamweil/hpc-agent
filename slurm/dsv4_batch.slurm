@@ -151,10 +151,9 @@ fi
 # DeepGEMM JIT compiler needs nvcc in PATH
 export PATH="/usr/local/cuda/13.0/bin:$PATH"
 export CUDA_HOME="/usr/local/cuda/13.0"
-# Clear stale DeepGEMM JIT cache (can have corrupted H100 kernels from previous runs)
-export DG_JIT_CACHE_DIR="$HOME/.cache/vllm/deep_gemm"
-rm -rf "$DG_JIT_CACHE_DIR" 2>/dev/null
-mkdir -p "$DG_JIT_CACHE_DIR"
+# DeepGEMM has H100 sm_90 memory addressing bug in vLLM 0.22.0
+# Disable to fall back to cuBLASLt kernels (slower but stable)
+export VLLM_DISABLE_DEEPGEMM=1
 # CUDA memory management
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_CACHE_DISABLE=1
