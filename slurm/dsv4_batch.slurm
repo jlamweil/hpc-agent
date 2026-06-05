@@ -6,7 +6,8 @@
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:2
 #SBATCH --constraint='gpuh100'
-#SBATCH --mem=64G
+#SBATCH --exclusive
+#SBATCH --mem=128G
 #SBATCH --partition=pri2021gpu
 #SBATCH --account=qosmivgpu
 #SBATCH --qos=preemptqos
