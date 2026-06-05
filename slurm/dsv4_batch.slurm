@@ -48,7 +48,7 @@ BATCH_SIZE="${BATCH_SIZE:-10}"
 MODEL="${MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
 TP="${TP:-2}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-1024}"
 KVCACHE_DTYPE="${KVCACHE_DTYPE:-fp8}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-600}"
@@ -231,7 +231,7 @@ python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
     --tensor-parallel-size "$TP" \
-    --gpu-memory-utilization 0.96 \
+    --gpu-memory-utilization 0.98 \
     --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --kv-cache-dtype fp8 \
