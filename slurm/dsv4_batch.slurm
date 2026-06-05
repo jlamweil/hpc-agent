@@ -151,8 +151,9 @@ fi
 # DeepGEMM JIT compiler needs nvcc in PATH
 export PATH="/usr/local/cuda/13.0/bin:$PATH"
 export CUDA_HOME="/usr/local/cuda/13.0"
-# Reduce CUDA memory fragmentation (suggested by PyTorch OOM error)
+# CUDA memory management
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export CUDA_CACHE_DISABLE=1
 # NCCL_SOCKET_IFNAME: excludes loopback to avoid 'bind failed: Cannot assign requested address'
 export NCCL_SOCKET_IFNAME='^lo,docker'
 export HF_HUB_OFFLINE=1
@@ -230,7 +231,7 @@ python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_PATH" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
     --tensor-parallel-size "$TP" \
-    --gpu-memory-utilization 0.99 \
+    --gpu-memory-utilization 0.96 \
     --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --kv-cache-dtype fp8 \
