@@ -103,17 +103,12 @@ else
 fi
 
 # Critical env vars MUST be set before any vLLM import (including the version check)
-# LD_PRELOAD: our cuda_stub.so intercepts cuInit() to work around driver 12.3 vs CUDA 13
 # NCCL_SOCKET_IFNAME: excludes loopback to avoid 'bind failed: Cannot assign requested address'
-export LD_PRELOAD="$HOME/cuda_stub.so"
 export NCCL_SOCKET_IFNAME='^lo,docker'
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HOME="$HOME/hf_cache"
-# vLLM _C.abi3.so RPATH was patched with patchelf to find libc10.so (from PT 2.11) + CUDA 13 libs
-# Full LD_LIBRARY_PATH as safety net for any non-RPATH-linked deps
-export LD_LIBRARY_PATH="/usr/local/cuda/13.0/lib64:$HOME/pt211_lib:$HOME/.conda/envs/autogluon-env/lib/python3.10/site-packages/torch/lib:$LD_LIBRARY_PATH"
-echo "[$(date -Iseconds)] CUDA stub: $LD_PRELOAD"
+echo "[$(date -Iseconds)] HF_HOME=$HF_HOME"
 mkdir -p "$HF_HOME"
 
 # Check vLLM (must be pre-installed — compute nodes have no internet)
