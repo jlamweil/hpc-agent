@@ -1,0 +1,25 @@
+.gitnexus
+__pycache__/
+*.pyc
+.slim/
+
+# Per-deployment config (HPC credentials, partitions, banned nodes)
+config.yaml
+
+# Private fill task prompts
+prompts/fill/*.txt
+
+# Internal scratch/planning (not for public)
+.scratch/
+
+# Results DB files
+results-*.db
+.hpc_notes.md
+scripts/config.sh
+*.db
+*.sqlite
+*.db-shm
+*.db-wal
+logs/
+.slim/deepwork/
+venv/

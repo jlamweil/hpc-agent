@@ -1,0 +1,54 @@
+# HPC Agent Configuration — Example
+# Copy to config.yaml and fill in your HPC cluster details.
+# config.yaml is gitignored — never commit it.
+
+local:
+  sqlite_path: "tasks.db"
+  batch_size: 5
+  max_retries: 3
+  max_parallel_jobs: 4
+  poll_interval: 10
+  log_file: "monitor.log"
+
+  batch:
+    min_pending: 10
+    max_batch: 200
+    model: "deepseek-ai/DeepSeek-V4-Flash"
+
+hpc:
+  # SSH connection
+  user: "your-hpc-username"
+  host: "your-hpc-login-host"
+  dir: "~/hpc-agent"
+
+  # SLURM settings
+  partition: "your-partition"
+  account: "your-account"
+  qos: "defaultqos"
+  time_limit: "06:00:00"
+  mem: "128G"
+
+  # Nodes to exclude from SLURM allocation (e.g. known-bad hardware)
+  banned_nodes: []
+
+  # DS V4 Flash batch settings
+  dsv4:
+    partition: "your-partition"
+    account: "your-account"
+    qos: "defaultqos"
+    tensor_parallel: 4
+    gpu_memory_utilization: 0.92
+    max_model_len: 4096
+    kv_cache_dtype: "fp8"
+    time_limit: "12:00:00"
+    mem: "128G"
+    gres: "gpu:4"
+    model: "deepseek-ai/DeepSeek-V4-Flash"
+
+# Fill task cycling configuration
+fill_tasks:
+  max_fill_tasks: 5
+  max_per_job: 50
+  base_repo_dir: ~/Documents/GAIA
+  target_repos: []
+  repo_paths: {}
